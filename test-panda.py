@@ -1,4 +1,4 @@
-import pandas as pd
+
 
 # Dummy list of dictionaries
 data = [
@@ -9,7 +9,7 @@ data = [
 ]
 
 # Create a DataFrame (like a table)
-ls = pd.DataFrame(data)
+df = pd.DataFrame(data)
 
 # Display the table
 print(df)
