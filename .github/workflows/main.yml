@@ -2,7 +2,7 @@ name: Code Quality Checks
 
 on:
   push:
-    branches: [ main, dev, feat/* ]
+    branches: [dev_*, feat/*]
   pull_request:
 
 jobs:
@@ -16,8 +16,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          # Use a supported version
-          python-version: '3.12'
+          python-version: '3.9.20'
 
       - name: Install dependencies for checks
         run: |
