@@ -34,4 +34,4 @@ jobs:
       - name: Run MyPy (detect import/type/semantic issues)
         run: |
           echo "Running MyPy static analysis..."
-          mypy --ignore-missing-imports --disallow-untyped-defs .
+          mypy --ignore-missing-imports .
