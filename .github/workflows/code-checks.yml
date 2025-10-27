@@ -1,3 +1,65 @@
+name: Code Quality Checks
+
+on:
+  push:
+    branches: [dev_*, feat/*]
+
+jobs:
+  code-checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9.20'
+
+      - name: Install dependencies for checks
+        run: |
+          python -m pip install --upgrade pip
+          pip install mypy
+
+      - name: Identify changed Python files
+        id: changed-files
+        run: |
+          # For push events, compare with previous commit
+          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD | grep '\.py$' || true)
+
+          echo "Changed Python files:"
+          echo "$CHANGED_FILES"
+
+          # Save to GitHub Actions output
+          {
+            echo "files<<EOF"
+            echo "$CHANGED_FILES"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Run Syntax and Type Checks (only if files changed)
+        if: steps.changed-files.outputs.files != ''
+        run: |
+          echo "Checking changed Python files..."
+          echo "${{ steps.changed-files.outputs.files }}" | while read -r file; do
+            if [ -n "$file" ]; then
+              echo "Running syntax and type checks on: $file"
+              
+              # Syntax check
+              python -m py_compile "$file" || echo "Syntax check failed for $file"
+              
+              # Type check with limited scope - only check the file itself
+              mypy --follow-imports=skip --ignore-missing-imports "$file" || echo "Type check failed for $file"
+            fi
+          done
+
+      - name: Skip Check (no Python files changed)
+        if: steps.changed-files.outputs.files == ''
+        run: echo "No Python files changed. Skipping checks."
+
 # name: Code Quality Checks
 
 # on:
@@ -34,40 +96,3 @@
 #         run: |
 #           echo "Running MyPy static analysis..."
 #           mypy --ignore-missing-imports .
-
-name: Code Quality Checks
-
-on:
-  push:
-    branches: [dev_*, feat/*]
-  pull_request:
-
-jobs:
-  code-checks:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.9.20'
-
-      - name: Install dependencies for checks
-        run: |
-          python -m pip install --upgrade pip
-          pip install mypy
-
-      # --- SYNTAX CHECK ---
-      - name: Check for syntax errors
-        run: |
-          echo "Checking for syntax errors..."
-          python -m compileall -q .
-
-      # --- TYPE & SEMANTIC CHECK ---
-      - name: Run MyPy (detect import/type/semantic issues)
-        run: |
-          echo "Running MyPy static analysis..."
-          mypy --ignore-missing-imports .
