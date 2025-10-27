@@ -57,7 +57,7 @@ jobs:
       - name: Run Comprehensive Code Quality Analysis
         id: quality_checks
         run: |
-          echo "🔍 Starting comprehensive code quality analysis with professional tools..."
+          echo "Starting comprehensive code quality analysis with professional tools..."
           python <<'EOF'
           import subprocess
           import sys
@@ -113,10 +113,10 @@ jobs:
                                   location = f"{err['file']}"
                                   if err['line']:
                                       location += f":{err['line']}"
-                                  print(f"     📁 Location: {location}")
+                                  print(f"       Location: {location}")
                               if err['details']:
                                   for key, value in err['details'].items():
-                                      print(f"     ℹ️  {key}: {value}")
+                                      print(f"        {key}: {value}")
                   
                   if self.warnings:
                       total_warnings = sum(len(warns) for warns in self.warnings.values())
@@ -133,7 +133,7 @@ jobs:
                                   location = f"{warn['file']}"
                                   if warn['line']:
                                       location += f":{warn['line']}"
-                                  print(f"     📁 {location}")
+                                  print(f"       {location}")
                           if len(warns) > 10:
                               print(f"\n  ... and {len(warns) - 10} more {category} warnings")
                   
@@ -158,7 +158,7 @@ jobs:
 
           def run_command(cmd, description):
               """Run a command and return output"""
-              print(f"\n🔧 {description}...")
+              print(f"\n  {description}...")
               try:
                   result = subprocess.run(
                       cmd,
@@ -178,7 +178,7 @@ jobs:
           # ============================================================================
           def check_mypy(collector):
               print("=" * 90)
-              print("🔍 RUNNING MYPY - Static Type Checker")
+              print("   RUNNING MYPY - Static Type Checker")
               print("=" * 90)
               
               code, stdout, stderr = run_command(
@@ -225,7 +225,7 @@ jobs:
           # ============================================================================
           def check_pylint(collector):
               print("=" * 90)
-              print("🔍 RUNNING PYLINT - Code Quality Analyzer")
+              print("   RUNNING PYLINT - Code Quality Analyzer")
               print("=" * 90)
               
               code, stdout, stderr = run_command(
@@ -275,7 +275,7 @@ jobs:
           # ============================================================================
           def check_bandit(collector):
               print("=" * 90)
-              print("🔍 RUNNING BANDIT - Security Scanner")
+              print("   RUNNING BANDIT - Security Scanner")
               print("=" * 90)
               
               code, stdout, stderr = run_command(
@@ -329,7 +329,7 @@ jobs:
           # ============================================================================
           def check_flake8(collector):
               print("=" * 90)
-              print("🔍 RUNNING FLAKE8 - Style and Bug Checker")
+              print("   RUNNING FLAKE8 - Style and Bug Checker")
               print("=" * 90)
               
               code, stdout, stderr = run_command(
@@ -384,7 +384,7 @@ jobs:
           # ============================================================================
           def check_radon(collector):
               print("=" * 90)
-              print("🔍 RUNNING RADON - Complexity Analyzer")
+              print("   RUNNING RADON - Complexity Analyzer")
               print("=" * 90)
               
               code, stdout, stderr = run_command(
@@ -435,7 +435,7 @@ jobs:
           # ============================================================================
           def check_vulture(collector):
               print("=" * 90)
-              print("🔍 RUNNING VULTURE - Dead Code Detector")
+              print("   RUNNING VULTURE - Dead Code Detector")
               print("=" * 90)
               
               code, stdout, stderr = run_command(
@@ -472,7 +472,7 @@ jobs:
           # ============================================================================
           def check_safety(collector):
               print("=" * 90)
-              print("🔍 RUNNING SAFETY - Dependency Vulnerability Checker")
+              print("   RUNNING SAFETY - Dependency Vulnerability Checker")
               print("=" * 90)
               
               # Check if requirements.txt exists
@@ -517,7 +517,7 @@ jobs:
           # ============================================================================
           def check_custom_type_compatibility(collector):
               print("=" * 90)
-              print("🔍 RUNNING CUSTOM TYPE COMPATIBILITY ANALYZER")
+              print("   RUNNING CUSTOM TYPE COMPATIBILITY ANALYZER")
               print("=" * 90)
               
               import ast
@@ -626,7 +626,7 @@ jobs:
           # RUN ALL CHECKS
           # ============================================================================
           print("\n" + "=" * 90)
-          print("🚀 COMPREHENSIVE CODE ANALYSIS WITH INDUSTRY-STANDARD TOOLS")
+          print("   COMPREHENSIVE CODE ANALYSIS WITH INDUSTRY-STANDARD TOOLS")
           print("=" * 90)
 
           try:
@@ -657,13 +657,13 @@ jobs:
         run: |
           echo "# 📊 Advanced Code Quality Analysis Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 📌 Build Information" >> $GITHUB_STEP_SUMMARY
+          echo "##    Build Information" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Author:** @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Timestamp:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 🔧 Tools Used" >> $GITHUB_STEP_SUMMARY
+          echo "##    Tools Used" >> $GITHUB_STEP_SUMMARY
           echo "- **MyPy** - Static type checker" >> $GITHUB_STEP_SUMMARY
           echo "- **PyLint** - Code quality analyzer" >> $GITHUB_STEP_SUMMARY
           echo "- **Bandit** - Security vulnerability scanner" >> $GITHUB_STEP_SUMMARY
@@ -679,7 +679,7 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "Your code meets professional quality standards." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "🎉 **Ready for review and merge!**" >> $GITHUB_STEP_SUMMARY
+            echo "   **Ready for review and merge!**" >> $GITHUB_STEP_SUMMARY
           else
             echo "## ❌ Quality Checks Failed" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
