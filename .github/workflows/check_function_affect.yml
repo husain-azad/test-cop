@@ -24,7 +24,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9.20'
+          python-version: '3.9'
           cache: 'pip'
 
       - name: Install analysis tools and dependencies
@@ -719,5 +719,4 @@ jobs:
           
           git diff --staged --quiet || git commit -m "chore: quality check passed [skip ci]" || true
           git push || echo "Could not push results"
-        
         
