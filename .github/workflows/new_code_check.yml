@@ -52,11 +52,14 @@ jobs:
         if: steps.changed-files.outputs.files != ''
         run: |
           echo "Checking changed Python files..."
-          for file in ${{ steps.changed-files.outputs.files }}; do
-            echo "Running syntax and type checks on: $file"
-            python -m py_compile "$file"
-            mypy --ignore-missing-imports "$file"
+          echo "${{ steps.changed-files.outputs.files }}" | while read -r file; do
+            if [ -n "$file" ]; then
+              echo "Running syntax and type checks on: $file"
+              python -m py_compile "$file"
+              mypy --ignore-missing-imports "$file"
+            fi
           done
+
 
       - name: Skip Check (no Python files changed)
         if: steps.changed-files.outputs.files == ''
