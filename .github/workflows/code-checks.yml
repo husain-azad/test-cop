@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch full history for comparison
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -49,15 +51,16 @@ jobs:
           echo "⚙️ Checking for code complexity..."
           radon cc . -a -nc
 
-      # --- FUNCTION DEPENDENCY IMPACT CHECK ---
-      - name: Analyze function dependency and behavioral impact
+      # --- CODE DUPLICATION CHECK ---
+      - name: Check for code duplication
         run: |
-          echo "🧩 Checking for function dependency impact..."
+          echo "🔄 Checking for duplicate code blocks..."
           python <<'EOF'
-          import ast, os, sys, json
+          import ast, os, hashlib
+          from collections import defaultdict
 
-          def get_function_signatures(directory):
-              signatures = {}
+          def get_code_blocks(directory):
+              blocks = defaultdict(list)
               for root, _, files in os.walk(directory):
                   for f in files:
                       if f.endswith(".py"):
@@ -67,46 +70,330 @@ jobs:
                                   tree = ast.parse(file.read(), filename=f)
                               except SyntaxError:
                                   continue
+                              
+                              for node in ast.walk(tree):
+                                  if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                                      code = ast.unparse(node)
+                                      if len(code) > 100:  # Only check substantial blocks
+                                          code_hash = hashlib.md5(code.encode()).hexdigest()
+                                          blocks[code_hash].append(f"{path}:{node.name}")
+              return blocks
+
+          blocks = get_code_blocks(".")
+          duplicates = {k: v for k, v in blocks.items() if len(v) > 1}
+
+          if duplicates:
+              print("🚨 Duplicate code blocks detected:\n")
+              for locations in duplicates.values():
+                  print(f"  Duplicated in: {', '.join(locations)}")
+              print("\n⚠️  Consider refactoring to reduce duplication.")
+          else:
+              print("✅ No significant code duplication found.")
+          EOF
+
+      # --- FUNCTION DEPENDENCY IMPACT CHECK (ENHANCED) ---
+      - name: Analyze function dependency and behavioral impact
+        run: |
+          echo "🧩 Checking for function dependency impact..."
+          python <<'EOF'
+          import ast, os, sys, json
+          from collections import defaultdict
+
+          def get_function_signatures(directory):
+              """Extract function signatures with enhanced metadata"""
+              signatures = {}
+              for root, _, files in os.walk(directory):
+                  for f in files:
+                      if f.endswith(".py"):
+                          path = os.path.join(root, f)
+                          rel_path = os.path.relpath(path, directory)
+                          with open(path, "r", encoding="utf-8") as file:
+                              try:
+                                  content = file.read()
+                                  tree = ast.parse(content, filename=f)
+                              except SyntaxError:
+                                  continue
+                              
                               for node in ast.walk(tree):
                                   if isinstance(node, ast.FunctionDef):
-                                      # Collect args and return type (if annotation exists)
                                       returns = ast.unparse(node.returns) if getattr(node, "returns", None) else ""
-                                      signatures[f"{f}:{node.name}"] = {
+                                      
+                                      # Infer return type from return statements if no annotation
+                                      if not returns:
+                                          returns = infer_return_type(node)
+                                      
+                                      signatures[f"{rel_path}:{node.name}"] = {
                                           "args": [a.arg for a in node.args.args],
+                                          "defaults": len(node.args.defaults),
                                           "returns": returns,
-                                          "file": f,
+                                          "file": rel_path,
+                                          "line": node.lineno,
                                       }
               return signatures
+
+          def infer_return_type(func_node):
+              """Infer return type from return statements"""
+              for node in ast.walk(func_node):
+                  if isinstance(node, ast.Return) and node.value:
+                      if isinstance(node.value, ast.List):
+                          return "List"
+                      elif isinstance(node.value, ast.Dict):
+                          return "Dict"
+                      elif isinstance(node.value, ast.Tuple):
+                          return "Tuple"
+                      elif isinstance(node.value, ast.Constant):
+                          return type(node.value.value).__name__
+              return "Unknown"
+
+          def find_function_calls(directory):
+              """Find all function calls and their locations"""
+              calls = defaultdict(list)
+              for root, _, files in os.walk(directory):
+                  for f in files:
+                      if f.endswith(".py"):
+                          path = os.path.join(root, f)
+                          rel_path = os.path.relpath(path, directory)
+                          with open(path, "r", encoding="utf-8") as file:
+                              try:
+                                  tree = ast.parse(file.read(), filename=f)
+                              except SyntaxError:
+                                  continue
+                              
+                              for node in ast.walk(tree):
+                                  if isinstance(node, ast.Call):
+                                      if isinstance(node.func, ast.Name):
+                                          func_name = node.func.id
+                                          calls[func_name].append({
+                                              "file": rel_path,
+                                              "line": node.lineno
+                                          })
+                                      elif isinstance(node.func, ast.Attribute):
+                                          func_name = node.func.attr
+                                          calls[func_name].append({
+                                              "file": rel_path,
+                                              "line": node.lineno
+                                          })
+              return calls
 
           SNAPSHOT_FILE = ".code_signatures_snapshot.json"
 
           old_signatures = {}
           if os.path.exists(SNAPSHOT_FILE):
               try:
-                  old_signatures = json.load(open(SNAPSHOT_FILE))
+                  with open(SNAPSHOT_FILE) as f:
+                      old_signatures = json.load(f)
               except Exception:
                   old_signatures = {}
 
           new_signatures = get_function_signatures(".")
+          function_calls = find_function_calls(".")
 
           impacted = []
-          for func, info in new_signatures.items():
-              if func in old_signatures:
-                  old_info = old_signatures[func]
+          breaking_changes = []
+          
+          for func_path, info in new_signatures.items():
+              func_name = func_path.split(":")[-1]
+              
+              if func_path in old_signatures:
+                  old_info = old_signatures[func_path]
+                  changes = []
+                  
+                  # Check parameter changes
                   if old_info["args"] != info["args"]:
-                      impacted.append(f"{func} — function parameters changed")
-                  elif old_info["returns"] != info["returns"]:
-                      impacted.append(f"{func} — return type changed")
+                      if len(old_info["args"]) != len(info["args"]):
+                          changes.append(f"parameter count changed: {len(old_info['args'])} → {len(info['args'])}")
+                          breaking_changes.append((func_path, "parameter_count", func_name))
+                      else:
+                          changes.append(f"parameter names changed: {old_info['args']} → {info['args']}")
+                  
+                  # Check return type changes
+                  if old_info["returns"] != info["returns"]:
+                      old_ret = old_info["returns"] or "Unknown"
+                      new_ret = info["returns"] or "Unknown"
+                      changes.append(f"return type changed: {old_ret} → {new_ret}")
+                      breaking_changes.append((func_path, "return_type", func_name))
+                  
+                  # Check default arguments
+                  if old_info.get("defaults", 0) != info.get("defaults", 0):
+                      changes.append(f"default arguments changed")
+                  
+                  if changes:
+                      # Find where this function is called
+                      call_locations = function_calls.get(func_name, [])
+                      
+                      impact_msg = f"\n📍 {func_path} (line {info['line']})"
+                      for change in changes:
+                          impact_msg += f"\n   ⚠️  {change}"
+                      
+                      if call_locations:
+                          impact_msg += f"\n   🔗 Called in {len(call_locations)} location(s):"
+                          for loc in call_locations[:5]:  # Show first 5
+                              if loc["file"] != info["file"]:  # Only show cross-file calls
+                                  impact_msg += f"\n      • {loc['file']}:{loc['line']}"
+                          if len(call_locations) > 5:
+                              impact_msg += f"\n      • ... and {len(call_locations) - 5} more"
+                      
+                      impacted.append(impact_msg)
 
+          # Save new snapshot
           with open(SNAPSHOT_FILE, "w") as f:
               json.dump(new_signatures, f, indent=2)
 
           if impacted:
-              print("🚨 Potentially impacted functions detected:\n")
-              for i in impacted:
-                  print(f" - {i}")
-              print("\n❗ Please review dependent files before merge.")
+              print("🚨 FUNCTION BEHAVIOR CHANGES DETECTED")
+              print("=" * 60)
+              for impact in impacted:
+                  print(impact)
+              
+              if breaking_changes:
+                  print("\n" + "=" * 60)
+                  print("⛔ BREAKING CHANGES DETECTED:")
+                  for func_path, change_type, func_name in breaking_changes:
+                      print(f"   • {func_path} - {change_type}")
+                  
+              print("\n" + "=" * 60)
+              print("📋 ACTION REQUIRED:")
+              print("   1. Review all affected function calls")
+              print("   2. Update calling code if necessary")
+              print("   3. Add tests for changed functions")
+              print("   4. Document breaking changes in PR description")
+              print("=" * 60)
               sys.exit(1)
           else:
               print("✅ No function behavior changes detected.")
           EOF
+
+      # --- UNUSED IMPORTS CHECK ---
+      - name: Check for unused imports
+        run: |
+          echo "📦 Checking for unused imports..."
+          python <<'EOF'
+          import ast, os
+
+          def check_unused_imports(directory):
+              issues = []
+              for root, _, files in os.walk(directory):
+                  for f in files:
+                      if f.endswith(".py"):
+                          path = os.path.join(root, f)
+                          with open(path, "r", encoding="utf-8") as file:
+                              try:
+                                  tree = ast.parse(file.read(), filename=f)
+                              except SyntaxError:
+                                  continue
+                              
+                              imports = set()
+                              used_names = set()
+                              
+                              for node in ast.walk(tree):
+                                  if isinstance(node, ast.Import):
+                                      for alias in node.names:
+                                          imports.add(alias.asname or alias.name)
+                                  elif isinstance(node, ast.ImportFrom):
+                                      for alias in node.names:
+                                          imports.add(alias.asname or alias.name)
+                                  elif isinstance(node, ast.Name):
+                                      used_names.add(node.id)
+                              
+                              unused = imports - used_names
+                              if unused:
+                                  issues.append(f"{path}: {', '.join(sorted(unused))}")
+              
+              return issues
+
+          issues = check_unused_imports(".")
+          if issues:
+              print("⚠️  Unused imports found:")
+              for issue in issues[:10]:  # Show first 10
+                  print(f"   • {issue}")
+              if len(issues) > 10:
+                  print(f"   • ... and {len(issues) - 10} more files")
+          else:
+              print("✅ No unused imports detected.")
+          EOF
+
+      # --- MISSING DOCSTRINGS CHECK ---
+      - name: Check for missing docstrings
+        run: |
+          echo "📝 Checking for missing docstrings..."
+          python <<'EOF'
+          import ast, os
+
+          def check_docstrings(directory):
+              missing = []
+              for root, _, files in os.walk(directory):
+                  for f in files:
+                      if f.endswith(".py"):
+                          path = os.path.join(root, f)
+                          with open(path, "r", encoding="utf-8") as file:
+                              try:
+                                  tree = ast.parse(file.read(), filename=f)
+                              except SyntaxError:
+                                  continue
+                              
+                              for node in ast.walk(tree):
+                                  if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                                      if not ast.get_docstring(node):
+                                          if isinstance(node, ast.FunctionDef) and not node.name.startswith("_"):
+                                              missing.append(f"{path}:{node.lineno} - function '{node.name}'")
+                                          elif isinstance(node, ast.ClassDef):
+                                              missing.append(f"{path}:{node.lineno} - class '{node.name}'")
+              return missing
+
+          missing = check_docstrings(".")
+          if missing:
+              print(f"⚠️  {len(missing)} functions/classes missing docstrings (showing first 10):")
+              for item in missing[:10]:
+                  print(f"   • {item}")
+          else:
+              print("✅ All public functions/classes have docstrings.")
+          EOF
+
+      # --- SECURITY PATTERN CHECK ---
+      - name: Check for common security issues
+        run: |
+          echo "🔒 Checking for security patterns..."
+          python <<'EOF'
+          import re, os
+
+          PATTERNS = {
+              r'eval\(': 'Dangerous eval() usage',
+              r'exec\(': 'Dangerous exec() usage',
+              r'pickle\.loads': 'Unsafe pickle.loads usage',
+              r'shell=True': 'Potential command injection with shell=True',
+              r'password\s*=\s*["\'][^"\']+["\']': 'Hardcoded password',
+              r'api[_-]?key\s*=\s*["\'][^"\']+["\']': 'Hardcoded API key',
+              r'SECRET\s*=\s*["\'][^"\']+["\']': 'Hardcoded secret',
+          }
+
+          issues = []
+          for root, _, files in os.walk("."):
+              for f in files:
+                  if f.endswith(".py"):
+                      path = os.path.join(root, f)
+                      with open(path, "r", encoding="utf-8") as file:
+                          for i, line in enumerate(file, 1):
+                              for pattern, desc in PATTERNS.items():
+                                  if re.search(pattern, line, re.IGNORECASE):
+                                      issues.append(f"{path}:{i} - {desc}")
+
+          if issues:
+              print("🚨 Security concerns found:")
+              for issue in issues:
+                  print(f"   • {issue}")
+              print("\n⚠️  Please review these patterns carefully.")
+          else:
+              print("✅ No obvious security patterns detected.")
+          EOF
+
+      # --- GENERATE PR COMMENT SUMMARY ---
+      - name: Generate check summary
+        if: always()
+        run: |
+          echo "📊 Code Quality Check Summary" >> $GITHUB_STEP_SUMMARY
+          echo "================================" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ All quality checks completed!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
