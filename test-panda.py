@@ -9,9 +9,9 @@ data = [
 ]
 
 # adding type error
-# total_age = ''
-# for d in data:
-#     total_age += d['age']
+total_age = ''
+for d in data:
+    total_age += d['age']
 
 # Create a DataFrame (like a table)
 df = pd.DataFrame(data)
