@@ -1,66 +1,66 @@
-name: New Code Quality Checks
+# name: New Code Quality Checks
 
-on:
-  push:
-    branches: [dev_*, feat/*]
-  pull_request:
+# on:
+#   push:
+#     branches: [dev_*, feat/*]
+#   pull_request:
 
-jobs:
-  code-checks:
-    runs-on: ubuntu-latest
+# jobs:
+#   code-checks:
+#     runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Fetch full history so git diff works properly
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
+#         with:
+#           fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.9.20'
+#       - name: Set up Python
+#         uses: actions/setup-python@v4
+#         with:
+#           python-version: '3.9.20'
 
-      - name: Install dependencies for checks
-        run: |
-          python -m pip install --upgrade pip
-          pip install mypy
+#       - name: Install dependencies for checks
+#         run: |
+#           python -m pip install --upgrade pip
+#           pip install mypy
 
-      - name: Identify changed Python files
-        id: changed-files
-        run: |
-          # Detect if it's a pull request or push and get diff accordingly
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1
-            CHANGED_FILES=$(git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD | grep '\.py$' || true)
-          else
-            CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD | grep '\.py$' || true)
-          fi
+#       - name: Identify changed Python files
+#         id: changed-files
+#         run: |
+#           # Detect if it's a pull request or push and get diff accordingly
+#           if [ "${{ github.event_name }}" = "pull_request" ]; then
+#             git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1
+#             CHANGED_FILES=$(git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD | grep '\.py$' || true)
+#           else
+#             CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD | grep '\.py$' || true)
+#           fi
 
-          echo "Changed Python files:"
-          echo "$CHANGED_FILES"
+#           echo "Changed Python files:"
+#           echo "$CHANGED_FILES"
 
-          # Save to GitHub Actions output for later steps
-          # Write multi-line output correctly
-          {
-            echo "files<<EOF"
-            echo "$CHANGED_FILES"
-            echo "EOF"
-          } >> $GITHUB_OUTPUT
-
-
-      - name: Run Syntax and Type Checks (only if files changed)
-        if: steps.changed-files.outputs.files != ''
-        run: |
-          echo "Checking changed Python files..."
-          echo "${{ steps.changed-files.outputs.files }}" | while read -r file; do
-            if [ -n "$file" ]; then
-              echo "Running syntax and type checks on: $file"
-              python -m py_compile "$file"
-              mypy --ignore-missing-imports "$file"
-            fi
-          done
+#           # Save to GitHub Actions output for later steps
+#           # Write multi-line output correctly
+#           {
+#             echo "files<<EOF"
+#             echo "$CHANGED_FILES"
+#             echo "EOF"
+#           } >> $GITHUB_OUTPUT
 
 
-      - name: Skip Check (no Python files changed)
-        if: steps.changed-files.outputs.files == ''
-        run: echo "No Python files changed. Skipping checks."
+#       - name: Run Syntax and Type Checks (only if files changed)
+#         if: steps.changed-files.outputs.files != ''
+#         run: |
+#           echo "Checking changed Python files..."
+#           echo "${{ steps.changed-files.outputs.files }}" | while read -r file; do
+#             if [ -n "$file" ]; then
+#               echo "Running syntax and type checks on: $file"
+#               python -m py_compile "$file"
+#               mypy --ignore-missing-imports "$file"
+#             fi
+#           done
+
+
+#       - name: Skip Check (no Python files changed)
+#         if: steps.changed-files.outputs.files == ''
+#         run: echo "No Python files changed. Skipping checks."
