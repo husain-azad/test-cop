@@ -1,0 +1,66 @@
+name: AI PR Duplicate Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  ai-pr-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout HEAD (PR branch)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          path: head
+
+      - name: Checkout BASE (target branch)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 1
+          path: base
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9.20'
+
+      - name: Install minimal deps for duplicate + dependency check
+        run: |
+          pip install pyyaml requests
+          # Optional dependencies for future AI reasoning
+          # pip install openai rapidfuzz
+
+      - name: Generate OpenAPI (BASE)
+        working-directory: base
+        env:
+          DJANGO_SETTINGS_MODULE: crbrm.settings
+        run: |
+          python manage.py generateschema > /tmp/openapi_base.json || echo '{}' > /tmp/openapi_base.json
+
+      - name: Generate OpenAPI (HEAD)
+        working-directory: head
+        env:
+          DJANGO_SETTINGS_MODULE: crbrm.settings
+        run: |
+          python manage.py generateschema > /tmp/openapi_head.json || echo '{}' > /tmp/openapi_head.json
+
+      - name: Run duplicate + dependency checks and comment on PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_DIR: ${{ github.workspace }}/base
+          HEAD_DIR: ${{ github.workspace }}/head
+          OPENAPI_BASE: /tmp/openapi_base.json
+          OPENAPI_HEAD: /tmp/openapi_head.json
+        working-directory: head
+        run: |
+          python scripts/ai_pr_check.py
