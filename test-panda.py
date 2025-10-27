@@ -18,3 +18,4 @@ df = pd.DataFrame(data)
 
 # Display the table
 print(df)
+print(df)
