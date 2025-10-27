@@ -1,4 +1,4 @@
-from test_function import add_numbers
+from test_function import add_numbers, some_numbers
 
 def do_something_with_number(a, b):
     add = add_numbers(a, b)
