@@ -13,7 +13,11 @@ jobs:
   ai-pr-check:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+
     steps:
+      # -------------------------------
+      # 1. Checkout PR (HEAD) and Base
+      # -------------------------------
       - name: Checkout HEAD (PR branch)
         uses: actions/checkout@v4
         with:
@@ -27,17 +31,29 @@ jobs:
           fetch-depth: 1
           path: base
 
+      # -------------------------------
+      # 2. Python Environment Setup
+      # -------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.9.20'
 
+      # -------------------------------
+      # 3. Install Dependencies
+      # -------------------------------
       - name: Install minimal deps for duplicate + dependency check
         run: |
-          pip install pyyaml requests
+          python -m pip install --upgrade pip
+          pip install pyyaml requests mypy
+          # Type stubs for better MyPy analysis
+          pip install types-requests types-PyYAML
           # Optional dependencies for future AI reasoning
           # pip install openai rapidfuzz
 
+      # -------------------------------
+      # 4. Generate OpenAPI Schemas
+      # -------------------------------
       - name: Generate OpenAPI (BASE)
         working-directory: base
         env:
@@ -52,6 +68,18 @@ jobs:
         run: |
           python manage.py generateschema > /tmp/openapi_head.json || echo '{}' > /tmp/openapi_head.json
 
+      # -------------------------------
+      # 5. Run MyPy Static Analysis
+      # -------------------------------
+      - name: Run MyPy static analysis
+        working-directory: head
+        run: |
+          echo "Running MyPy static analysis..."
+          mypy --install-types --non-interactive --ignore-missing-imports scripts/ai_pr_check.py || true
+
+      # -------------------------------
+      # 6. Run Duplicate + Dependency Check Script
+      # -------------------------------
       - name: Run duplicate + dependency checks and comment on PR
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
