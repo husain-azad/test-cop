@@ -44,17 +44,25 @@ jobs:
         if: steps.changed-files.outputs.files != ''
         run: |
           echo "Checking changed Python files..."
+          EXIT_CODE=0
           echo "${{ steps.changed-files.outputs.files }}" | while read -r file; do
             if [ -n "$file" ]; then
               echo "Running syntax and type checks on: $file"
               
               # Syntax check
-              python -m py_compile "$file" || echo "Syntax check failed for $file"
+              if ! python -m py_compile "$file"; then
+                echo "❌ Syntax check failed for $file"
+                EXIT_CODE=1
+              fi
               
-              # Type check with limited scope - only check the file itself
-              mypy --follow-imports=skip --ignore-missing-imports "$file" || echo "Type check failed for $file"
+              # Type check (only the file itself)
+              if ! mypy --follow-imports=skip --ignore-missing-imports "$file"; then
+                echo "❌ Type check failed for $file"
+                EXIT_CODE=1
+              fi
             fi
           done
+          exit $EXIT_CODE
 
       - name: Skip Check (no Python files changed)
         if: steps.changed-files.outputs.files == ''
