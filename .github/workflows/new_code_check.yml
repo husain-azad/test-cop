@@ -1,0 +1,57 @@
+name: Code Quality Checks
+
+on:
+  push:
+    branches: [dev_*, feat/*]
+  pull_request:
+
+jobs:
+  code-checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch full history so git diff works properly
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9.20'
+
+      - name: Install dependencies for checks
+        run: |
+          python -m pip install --upgrade pip
+          pip install mypy
+
+      - name: Identify changed Python files
+        id: changed-files
+        run: |
+          # Detect if it's a pull request or push and get diff accordingly
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1
+            CHANGED_FILES=$(git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD | grep '\.py$' || true)
+          else
+            CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD | grep '\.py$' || true)
+          fi
+
+          echo "Changed Python files:"
+          echo "$CHANGED_FILES"
+
+          # Save to GitHub Actions output for later steps
+          echo "files=$CHANGED_FILES" >> $GITHUB_OUTPUT
+
+      - name: Run Syntax and Type Checks (only if files changed)
+        if: steps.changed-files.outputs.files != ''
+        run: |
+          echo "Checking changed Python files..."
+          for file in ${{ steps.changed-files.outputs.files }}; do
+            echo "Running syntax and type checks on: $file"
+            python -m py_compile "$file"
+            mypy --ignore-missing-imports "$file"
+          done
+
+      - name: Skip Check (no Python files changed)
+        if: steps.changed-files.outputs.files == ''
+        run: echo "No Python files changed. Skipping checks."
