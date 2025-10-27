@@ -21,11 +21,11 @@ jobs:
         with:
           fetch-depth: 0
 
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
-          cache: 'pip'
+          python-version: '3.9.20'
 
       - name: Install analysis tools and dependencies
         run: |
