@@ -719,3 +719,5 @@ jobs:
           
           git diff --staged --quiet || git commit -m "chore: quality check passed [skip ci]" || true
           git push || echo "Could not push results"
+        
+        
