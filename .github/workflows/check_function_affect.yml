@@ -720,3 +720,56 @@ jobs:
           git diff --staged --quiet || git commit -m "chore: quality check passed [skip ci]" || true
           git push || echo "Could not push results"
         
+      # --- ENHANCED GITHUB SUMMARY OUTPUT ---
+      - name: Generate Enhanced GitHub Summary
+        if: always()
+        run: |
+          echo "# 🧠 Code Quality Dashboard" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch** | **Commit** | **Author** | **Timestamp (UTC)** |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------------|-------------|-------------|-------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| \`${{ github.ref_name }}\` | \`${{ github.sha }}\` | @${{ github.actor }} | $(date -u '+%Y-%m-%d %H:%M:%S') |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "## ⚙️ Tools Executed" >> $GITHUB_STEP_SUMMARY
+          echo "- 🧩 **MyPy** → Type consistency" >> $GITHUB_STEP_SUMMARY
+          echo "- 🧪 **PyLint** → Code structure & linting" >> $GITHUB_STEP_SUMMARY
+          echo "- 🛡️ **Bandit** → Security flaws" >> $GITHUB_STEP_SUMMARY
+          echo "- 🎨 **Flake8** → PEP8 styling & logic errors" >> $GITHUB_STEP_SUMMARY
+          echo "- 🧮 **Radon** → Cyclomatic complexity" >> $GITHUB_STEP_SUMMARY
+          echo "- 🪓 **Vulture** → Unused code detection" >> $GITHUB_STEP_SUMMARY
+          echo "- 📦 **Safety** → Dependency CVEs" >> $GITHUB_STEP_SUMMARY
+          echo "- 🧠 **Custom Analyzer** → Type mismatch in arithmetic ops" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.quality_checks.outcome }}" == "success" ]; then
+            echo "## ✅ All Checks Passed" >> $GITHUB_STEP_SUMMARY
+            echo "Your codebase passed all static, security, and style checks 🎉" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "> 🔒 Safe, Clean, and Ready for Merge" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ❌ Code Quality Issues Found" >> $GITHUB_STEP_SUMMARY
+            echo "### 🚨 Critical Errors (Blocking Merge)" >> $GITHUB_STEP_SUMMARY
+            echo "- ❌ Type Errors (MyPy)" >> $GITHUB_STEP_SUMMARY
+            echo "- ❌ Code Errors / Syntax Issues (Flake8/PyLint)" >> $GITHUB_STEP_SUMMARY
+            echo "- ❌ Security Vulnerabilities (Bandit/Safety)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            echo "### ⚠️ Warnings (Recommended Fixes)" >> $GITHUB_STEP_SUMMARY
+            echo "- ⚠️ Code Style or Dead Code (Flake8/Vulture)" >> $GITHUB_STEP_SUMMARY
+            echo "- ⚠️ Complex Functions (Radon)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            echo "### 🧭 Next Steps" >> $GITHUB_STEP_SUMMARY
+            echo "Run these locally to view & fix issues:" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+            echo "mypy .              # Type checks" >> $GITHUB_STEP_SUMMARY
+            echo "pylint .            # Lint & code quality" >> $GITHUB_STEP_SUMMARY
+            echo "bandit -r .         # Security scan" >> $GITHUB_STEP_SUMMARY
+            echo "flake8 .            # Style checks" >> $GITHUB_STEP_SUMMARY
+            echo "autopep8 -i -r .    # Auto-fix minor style issues" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "📝 Fix all errors before merging." >> $GITHUB_STEP_SUMMARY
+          fi
+
