@@ -6,7 +6,6 @@ from django.db.models import Case, When
 from django.core.cache import cache
 
 from utils.state_manager.mixin import StateManagerMixin
-from system.models import Chart
 from system.api.serializers.chart import ChartSerializer
 from django.db import transaction
 from django.utils.translation import gettext_lazy as _
