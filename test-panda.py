@@ -1,4 +1,4 @@
-import pandas as pd
+# import pandas as pd
 
 # Dummy list of dictionaries
 data = [
@@ -8,11 +8,10 @@ data = [
     {"id": 4, "name": "Diana", "age": 35, "city": "Tokyo"},
 ]
 
-print(df)
 # adding type error
-total_age = ''
-for d in data:
-    total_age += d['age']
+# total_age = ''
+# for d in data:
+#     total_age += d['age']
 
 # Create a DataFrame (like a table)
 df = pd.DataFrame(data)
