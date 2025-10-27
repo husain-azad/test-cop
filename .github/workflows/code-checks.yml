@@ -45,3 +45,117 @@ jobs:
       - name: Run Bandit (basic security check)
         run: bandit -r .
 
+name: Code Quality Checks
+
+on:
+  push:
+    branches:
+      - dev_*
+      - feat/*
+
+jobs:
+  code-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9.20'
+
+      - name: Install dependencies for checks
+        run: |
+          python -m pip install --upgrade pip
+          pip install mypy flake8 radon pylint astroid
+
+      # --- SYNTAX CHECK ---
+      - name: Check for syntax errors
+        run: |
+          echo "🔍 Checking for syntax errors..."
+          python -m compileall -q .
+
+      # --- TYPE & SEMANTIC CHECK ---
+      - name: Run MyPy (detect import/type/semantic issues)
+        run: |
+          echo "🧠 Running MyPy static analysis..."
+          mypy --ignore-missing-imports .
+
+      # --- LINT CHECK (STYLE & BASIC ERRORS) ---
+      - name: Run flake8 (code style & lint)
+        run: |
+          echo "🎨 Running flake8 linting..."
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      # --- CODE COMPLEXITY CHECK ---
+      - name: Analyze code complexity (Radon)
+        run: |
+          echo "⚙️ Checking for code complexity..."
+          radon cc . -a -nc
+
+      # --- FUNCTION DEPENDENCY IMPACT CHECK ---
+      - name: Analyze function dependency and behavioral impact
+        run: |
+          echo "🧩 Checking for function dependency impact..."
+          python <<'EOF'
+          import ast, os, sys
+
+          def get_function_signatures(directory):
+              signatures = {}
+              for root, _, files in os.walk(directory):
+                  for f in files:
+                      if f.endswith(".py"):
+                          path = os.path.join(root, f)
+                          with open(path, "r", encoding="utf-8") as file:
+                              try:
+                                  tree = ast.parse(file.read(), filename=f)
+                              except SyntaxError:
+                                  continue
+                              for node in ast.walk(tree):
+                                  if isinstance(node, ast.FunctionDef):
+                                      returns = ast.get_docstring(node) or ""
+                                      signatures[node.name] = {
+                                          "args": [a.arg for a in node.args.args],
+                                          "returns": returns.strip(),
+                                          "file": f
+                                      }
+              return signatures
+
+          old_signatures_file = ".code_signatures_snapshot.json"
+          import json
+
+          # Load old snapshot (if exists)
+          old_signatures = {}
+          if os.path.exists(old_signatures_file):
+              try:
+                  old_signatures = json.load(open(old_signatures_file))
+              except Exception:
+                  old_signatures = {}
+
+          new_signatures = get_function_signatures(".")
+
+          impacted_functions = []
+          for func, info in new_signatures.items():
+              if func in old_signatures:
+                  old_info = old_signatures[func]
+                  if old_info["args"] != info["args"]:
+                      impacted_functions.append(f"{func} → argument structure changed in {info['file']}")
+                  elif old_info["returns"] != info["returns"]:
+                      impacted_functions.append(f"{func} → return behavior changed in {info['file']}")
+
+          # Save snapshot for next run
+          with open(old_signatures_file, "w") as f:
+              json.dump(new_signatures, f, indent=2)
+
+          if impacted_functions:
+              print("🚨 Potentially impacted functions found:")
+              for f in impacted_functions:
+                  print(f" - {f}")
+              print("\n❗ Please verify dependent functions and modules before merging.")
+              sys.exit(1)
+          else:
+              print("✅ No behavioral function changes detected.")
+          EOF
