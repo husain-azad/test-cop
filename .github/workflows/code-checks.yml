@@ -27,13 +27,10 @@ jobs:
       - name: Identify changed Python files
         id: changed-files
         run: |
-          # For push events, compare with previous commit
           CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD | grep '\.py$' || true)
-
           echo "Changed Python files:"
           echo "$CHANGED_FILES"
 
-          # Save to GitHub Actions output
           {
             echo "files<<EOF"
             echo "$CHANGED_FILES"
@@ -45,28 +42,36 @@ jobs:
         run: |
           echo "Checking changed Python files..."
           EXIT_CODE=0
-          echo "${{ steps.changed-files.outputs.files }}" | while read -r file; do
+
+          for file in ${{ steps.changed-files.outputs.files }}; do
             if [ -n "$file" ]; then
-              echo "Running syntax and type checks on: $file"
-              
+              echo "🔍 Running checks on: $file"
+
               # Syntax check
               if ! python -m py_compile "$file"; then
                 echo "❌ Syntax check failed for $file"
                 EXIT_CODE=1
               fi
-              
-              # Type check (only the file itself)
+
+              # Type check
               if ! mypy --follow-imports=skip --ignore-missing-imports "$file"; then
                 echo "❌ Type check failed for $file"
                 EXIT_CODE=1
               fi
             fi
           done
-          exit $EXIT_CODE
+
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ One or more checks failed."
+            exit 1
+          else
+            echo "✅ All checks passed successfully."
+          fi
 
       - name: Skip Check (no Python files changed)
         if: steps.changed-files.outputs.files == ''
         run: echo "No Python files changed. Skipping checks."
+
 
 # name: Code Quality Checks
 
