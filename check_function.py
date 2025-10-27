@@ -9,16 +9,13 @@ def do_something_with_number(a, b):
     return result
 
 
-def main():
-    # ❌ Unused variable
-    mylist = [1, 2, 3]
-    value = do_something_with_number("10", 5)  # ❌ Mixing str and int (type issue)
-    print(value)
+# ❌ Unused variable
+mylist = [1, 2, 3]
+value = do_something_with_number("10", 5)  # ❌ Mixing str and int (type issue)
+print(value)
 
-    # ❌ Logic error: passing wrong structure to process_data
-    sample_data = [{"val": 10}, {"val": 20}]
-    process_data(sample_data)
+# ❌ Logic error: passing wrong structure to process_data
+sample_data = [{"val": 10}, {"val": 20}]
+process_data(sample_data)
 
 
-if __name__ == "__main__":
-    main()
