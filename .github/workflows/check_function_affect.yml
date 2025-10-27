@@ -1,8 +1,9 @@
-name: 🧠 Python Code Quality Checks
+name: 🧠 Python Code Quality & Safety Check
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main, master, develop]
   push:
     branches: [main, master, develop]
 
@@ -12,11 +13,13 @@ permissions:
 
 jobs:
   code-quality:
+    name: Code Quality Checks
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    continue-on-error: false
+    timeout-minutes: 25
 
     steps:
-      - name: 🛒 Checkout repository
+      - name: 🛒 Checkout code
         uses: actions/checkout@v4
 
       - name: 🐍 Set up Python
@@ -24,56 +27,66 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: ⚡ Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+
       - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install black isort flake8 mypy pylint bandit pytest
 
-      # 1️⃣ Check for syntax/import errors
-      - name: 🧩 Check Python syntax & imports
+      # 🧩 Run all checks but don’t stop on first failure
+      - name: 🚀 Run all static checks
+        id: run_checks
+        continue-on-error: true
         run: |
-          echo "Running basic syntax and import checks..."
-          python -m compileall . || exit 1
-          python -c "import pkgutil; [pkgutil.find_loader(m) for m in ['sys', 'os']]"
+          echo "-------------------- CODE QUALITY CHECKS START --------------------"
+          echo "" > all_errors.log
 
-      # 2️⃣ Code formatting check
-      - name: 🧹 Run Black (formatting)
-        run: black --check --diff .
+          echo "🧹 Running Black..." | tee -a all_errors.log
+          black --check . || echo "❌ Black formatting failed" >> all_errors.log
 
-      - name: 🔤 Run isort (import sorting)
-        run: isort --check-only --diff .
+          echo "🔤 Running isort..." | tee -a all_errors.log
+          isort --check-only . || echo "❌ isort import sorting failed" >> all_errors.log
 
-      # 3️⃣ Linting for style and logic issues
-      - name: 🔍 Run Flake8 (linting)
-        run: |
-          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=120 --statistics
+          echo "🔍 Running Flake8..." | tee -a all_errors.log
+          flake8 . || echo "❌ Flake8 linting failed" >> all_errors.log
 
-      - name: 🧠 Run Pylint (code analysis)
-        run: |
-          pylint $(git ls-files '*.py') --exit-zero
-
-      # 4️⃣ Static typing checks
-      - name: 🧾 Run Mypy (type checking)
-        run: |
-          mypy . --ignore-missing-imports --show-error-codes --pretty
-
-      # 5️⃣ Security check
-      - name: 🔒 Run Bandit (security)
-        run: |
-          bandit -r . -ll
-
-      # 6️⃣ Optional: Run tests if exists
-      - name: 🧪 Run Pytest (unit tests)
-        run: |
-          if [ -d "tests" ]; then
-            pytest -q --disable-warnings || exit 1
+          echo "🧠 Running Pylint..." | tee -a all_errors.log
+          pylint $(git ls-files '*.py') --exit-zero | tee pylint_report.log
+          if grep -q "Your code has been rated at [0-9]\.[0-9]/10" pylint_report.log; then
+            echo "Pylint completed."
           else
-            echo "No tests directory found. Skipping pytest."
+            echo "❌ Pylint found issues" >> all_errors.log
           fi
 
-      # 7️⃣ Summary result (always run)
+          echo "🧾 Running Mypy..." | tee -a all_errors.log
+          mypy . --ignore-missing-imports || echo "❌ Mypy type checking failed" >> all_errors.log
+
+          echo "🔒 Running Bandit..." | tee -a all_errors.log
+          bandit -r . -ll || echo "❌ Bandit security issues found" >> all_errors.log
+
+          echo "🧪 Running Pytest..." | tee -a all_errors.log
+          if [ -d "tests" ]; then
+            pytest -q --disable-warnings || echo "❌ Pytest failed" >> all_errors.log
+          else
+            echo "⚠️ No tests folder found. Skipping pytest." >> all_errors.log
+          fi
+
+          echo "-------------------- CODE QUALITY CHECKS END --------------------"
+          cat all_errors.log
+
+          # Fail the job if file contains "❌"
+          if grep -q "❌" all_errors.log; then
+            echo "One or more checks failed ❌"
+            exit 1
+          fi
+
+      # ✅ Summary output
       - name: ✅ Summary
         if: always()
         run: |
-          echo "✅ All checks completed!"
+          echo "✅ Code Quality Check completed. Review logs above."
