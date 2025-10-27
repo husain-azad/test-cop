@@ -40,7 +40,13 @@ jobs:
           echo "$CHANGED_FILES"
 
           # Save to GitHub Actions output for later steps
-          echo "files=$CHANGED_FILES" >> $GITHUB_OUTPUT
+          # Write multi-line output correctly
+          {
+            echo "files<<EOF"
+            echo "$CHANGED_FILES"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
 
       - name: Run Syntax and Type Checks (only if files changed)
         if: steps.changed-files.outputs.files != ''
