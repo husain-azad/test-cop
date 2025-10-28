@@ -72,175 +72,8 @@
 #         if: steps.changed-files.outputs.files == ''
 #         run: echo "No Python files changed. Skipping checks."
 
-#======================================================================================================================
-# name: Code Quality Checks (Changed Files Only)
 
-# on:
-#   push:
-#     branches:
-#       - dev_*
-#       - feat/*
-
-# permissions:
-#   contents: write
-#   pull-requests: write
-
-# jobs:
-#   code-checks:
-#     runs-on: ubuntu-latest
-#     timeout-minutes: 30
-
-#     steps:
-#       - name: Checkout repository
-#         uses: actions/checkout@v4
-#         with:
-#           fetch-depth: 0
-
-#       - name: Set up Python
-#         uses: actions/setup-python@v4
-#         with:
-#           python-version: '3.9.20'
-
-#       - name: Install analysis tools and dependencies
-#         run: |
-#           python -m pip install --upgrade pip
-#           # install pbr to avoid Bandit import error, and other tools
-#           pip install pbr
-#           pip install \
-#             mypy==1.7.1 \
-#             pylint==3.0.3 \
-#             flake8==6.1.0 \
-#             bandit==1.7.5 \
-#             radon==6.0.1 \
-#             vulture==2.10 \
-#             safety==2.3.5 \
-#             autopep8==2.0.4 \
-#             isort==5.13.2
-
-#       - name: Get changed Python files
-#         id: changed_files
-#         run: |
-#           echo "Detecting changed files between HEAD and HEAD~1..."
-#           # For pushes with multiple commits, compare to previous commit on the branch.
-#           # If you prefer to compare against origin/main (branch diff), replace the git diff below.
-#           CHANGED=$(git diff --name-only HEAD~1 HEAD | grep '\.py$' || true)
-#           # If that returned nothing, try to detect if this is an initial commit or multi-commit push:
-#           if [ -z "$CHANGED" ]; then
-#             CHANGED=$(git diff --name-only origin/main...HEAD | grep '\.py$' || true)
-#           fi
-#           echo "changed_files<<EOF" >> $GITHUB_OUTPUT
-#           echo "$CHANGED" >> $GITHUB_OUTPUT
-#           echo "EOF" >> $GITHUB_OUTPUT
-#           echo "Changed files:"
-#           echo "$CHANGED"
-
-#       - name: Run checks on changed files (fail on severity)
-#         id: quality_checks
-#         if: steps.changed_files.outputs.changed_files != ''
-#         run: |
-#           set -euo pipefail
-#           changed="${{ steps.changed_files.outputs.changed_files }}"
-
-#           # Normalize changed file list to an array
-#           IFS=$'\n' read -r -d '' -a files <<< "$changed"$'\0' || true
-
-#           if [ ${#files[@]} -eq 0 ]; then
-#             echo "No Python files changed. Skipping checks."
-#             exit 0
-#           fi
-
-#           echo "Running checks on ${#files[@]} changed Python file(s)."
-
-#           # Track overall failure
-#           FAIL=0
-
-#           # Helper to run a tool and record result
-#           run_and_check() {
-#             tool_name="$1"
-#             shift
-#             echo ""
-#             echo "=============================="
-#             echo "▶ $tool_name"
-#             echo "=============================="
-#             # run the command(s) passed as rest of args and capture exit code
-#             if "$@"; then
-#               echo "✅ $tool_name returned 0"
-#               return 0
-#             else
-#               rc=$?
-#               echo "❌ $tool_name returned exit code $rc"
-#               FAIL=1
-#               return $rc
-#             fi
-#           }
-
-#           for file in "${files[@]}"; do
-#             file=$(echo "$file" | xargs) || true
-#             if [ -z "$file" ]; then
-#               continue
-#             fi
-#             echo ""
-#             echo "----- Checking file: $file -----"
-
-#             # Mypy (treat non-zero as failure). Use ignore-missing-imports for typical monorepo deps.
-#             run_and_check "mypy $file" mypy --ignore-missing-imports "$file" || true
-
-#             # Pylint: run and fail if rc != 0. use --exit-zero only if you want warnings to pass
-#             # We keep docstring disables as before and enforce fail under threshold (fail-under removed to let rc=nonzero)
-#             run_and_check "pylint $file" pylint --output-format=text --disable=C0114,C0115,C0116 --max-line-length=120 "$file" || true
-
-#             # Bandit: run on file (bandit expects directories but -r works on file). Non-zero rc indicates issues
-#             run_and_check "bandit $file" bandit -r "$file" -f json || true
-
-#             # Flake8 (style issues). Non-zero rc indicates problems.
-#             run_and_check "flake8 $file" flake8 --extend-ignore=E203,W503 --max-line-length=120 "$file" || true
-
-#             # Radon complexity: radon returns 0 always typically; we parse output for high complexity
-#             echo "▶ radon $file (complexity analysis)"
-#             radon cc "$file" -a || true
-#             # radon exit code isn't reliable; optionally parse JSON if needed
-
-#             # Vulture: if it flags dead code, its rc may be non-zero; treat non-zero as warning/fail
-#             run_and_check "vulture $file" vulture "$file" --min-confidence 80 || true
-
-#             echo "----- Finished file: $file -----"
-#           done
-
-#           echo ""
-#           echo "=============================="
-#           if [ "$FAIL" -ne 0 ]; then
-#             echo "❌ One or more tools reported issues. Failing the step."
-#             # Print helpful tip
-#             echo "Tip: run the failing tools locally (mypy, pylint, flake8, bandit) to see details."
-#             exit 1
-#           else
-#             echo "✅ All checked tools passed for changed files."
-#             exit 0
-#           fi
-
-#       - name: Skip checks (no python changes)
-#         if: steps.changed_files.outputs.changed_files == ''
-#         run: |
-#           echo "No python files changed; skipping checks."
-
-#       - name: Generate GitHub Summary
-#         if: always()
-#         run: |
-#           echo "# Code Quality (Changed Files Only)" >> $GITHUB_STEP_SUMMARY
-#           echo "- Commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-#           echo "- Branch: \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
-#           if [ "${{ steps.changed_files.outputs.changed_files }}" = "" ]; then
-#             echo "No Python files changed — nothing to check." >> $GITHUB_STEP_SUMMARY
-#           else
-#             echo "Checked files:" >> $GITHUB_STEP_SUMMARY
-#             echo '```' >> $GITHUB_STEP_SUMMARY
-#             echo "${{ steps.changed_files.outputs.changed_files }}" >> $GITHUB_STEP_SUMMARY
-#             echo '```' >> $GITHUB_STEP_SUMMARY
-#           fi
-
-#======================================================================================================================
-
-name: 🧹 Code Quality Checks
+name: Code Quality Checks (Changed Files Only)
 
 on:
   push:
@@ -248,122 +81,160 @@ on:
       - dev_*
       - feat/*
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   code-checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: 📦 Checkout repository
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: 🐍 Set up Python
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.9.20"
+          python-version: '3.9.20'
 
-      - name: 🔧 Install dependencies
+      - name: Install analysis tools and dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install mypy pylint flake8 bandit radon vulture
+          # install pbr to avoid Bandit import error, and other tools
+          pip install pbr
+          pip install \
+            mypy==1.7.1 \
+            pylint==3.0.3 \
+            flake8==6.1.0 \
+            bandit==1.7.5 \
+            radon==6.0.1 \
+            vulture==2.10 \
+            safety==2.3.5 \
+            autopep8==2.0.4 \
+            isort==5.13.2
 
-      - name: 🧠 Run Code Quality Checks
+      - name: Get changed Python files
+        id: changed_files
+        run: |
+          echo "Detecting changed files between HEAD and HEAD~1..."
+          # For pushes with multiple commits, compare to previous commit on the branch.
+          # If you prefer to compare against origin/main (branch diff), replace the git diff below.
+          CHANGED=$(git diff --name-only HEAD~1 HEAD | grep '\.py$' || true)
+          # If that returned nothing, try to detect if this is an initial commit or multi-commit push:
+          if [ -z "$CHANGED" ]; then
+            CHANGED=$(git diff --name-only origin/main...HEAD | grep '\.py$' || true)
+          fi
+          echo "changed_files<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGED" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "Changed files:"
+          echo "$CHANGED"
+
+      - name: Run checks on changed files (fail on severity)
+        id: quality_checks
+        if: steps.changed_files.outputs.changed_files != ''
         run: |
           set -euo pipefail
-          echo "=========================================="
-          echo "🚀 Starting Code Quality Checks"
-          echo "=========================================="
+          changed="${{ steps.changed_files.outputs.changed_files }}"
 
-          changed_files=$(git diff --name-only origin/${{ github.event.before }} ${{ github.sha }} | grep '.py$' || true)
+          # Normalize changed file list to an array
+          IFS=$'\n' read -r -d '' -a files <<< "$changed"$'\0' || true
 
-          if [ -z "$changed_files" ]; then
-            echo "✅ No Python files changed. Skipping checks."
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No Python files changed. Skipping checks."
             exit 0
           fi
 
-          echo "🔍 Changed Python files:"
-          echo "$changed_files"
-          echo ""
+          echo "Running checks on ${#files[@]} changed Python file(s)."
 
-          # Summary tracking
-          ERRORS_FOUND=false
-          SUMMARY=""
+          # Track overall failure
+          FAIL=0
 
-          for file in $changed_files; do
-            echo "------------------------------------------"
-            echo "🧾 Checking file: $file"
-            echo "------------------------------------------"
-
-            TOOL_ERRORS=""
-
-            # === MYPY ===
-            echo "▶ mypy $file"
-            if ! mypy "$file"; then
-              TOOL_ERRORS+="❌ mypy failed\n"
-              ERRORS_FOUND=true
+          # Helper to run a tool and record result
+          run_and_check() {
+            tool_name="$1"
+            shift
+            echo ""
+            echo "=============================="
+            echo "▶ $tool_name"
+            echo "=============================="
+            # run the command(s) passed as rest of args and capture exit code
+            if "$@"; then
+              echo "✅ $tool_name returned 0"
+              return 0
             else
-              echo "✅ mypy passed"
+              rc=$?
+              echo "❌ $tool_name returned exit code $rc"
+              FAIL=1
+              return $rc
+            fi
+          }
+
+          for file in "${files[@]}"; do
+            file=$(echo "$file" | xargs) || true
+            if [ -z "$file" ]; then
+              continue
             fi
             echo ""
+            echo "----- Checking file: $file -----"
 
-            # === PYLINT ===
-            echo "▶ pylint $file"
-            if ! pylint "$file" -rn; then
-              TOOL_ERRORS+="❌ pylint failed\n"
-              ERRORS_FOUND=true
-            else
-              echo "✅ pylint passed"
-            fi
-            echo ""
+            # Mypy (treat non-zero as failure). Use ignore-missing-imports for typical monorepo deps.
+            run_and_check "mypy $file" mypy --ignore-missing-imports "$file" || true
 
-            # === FLAKE8 ===
-            echo "▶ flake8 $file"
-            if ! flake8 "$file"; then
-              TOOL_ERRORS+="❌ flake8 failed\n"
-              ERRORS_FOUND=true
-            else
-              echo "✅ flake8 passed"
-            fi
-            echo ""
+            # Pylint: run and fail if rc != 0. use --exit-zero only if you want warnings to pass
+            # We keep docstring disables as before and enforce fail under threshold (fail-under removed to let rc=nonzero)
+            run_and_check "pylint $file" pylint --output-format=text --disable=C0114,C0115,C0116 --max-line-length=120 "$file" || true
 
-            # === BANDIT ===
-            echo "▶ bandit $file"
-            if ! bandit -q "$file"; then
-              TOOL_ERRORS+="❌ bandit failed\n"
-              ERRORS_FOUND=true
-            else
-              echo "✅ bandit passed"
-            fi
-            echo ""
+            # Bandit: run on file (bandit expects directories but -r works on file). Non-zero rc indicates issues
+            run_and_check "bandit $file" bandit -r "$file" -f json || true
 
-            # === VULTURE ===
-            echo "▶ vulture $file"
-            if ! vulture "$file"; then
-              TOOL_ERRORS+="❌ vulture failed\n"
-              ERRORS_FOUND=true
-            else
-              echo "✅ vulture passed"
-            fi
-            echo ""
+            # Flake8 (style issues). Non-zero rc indicates problems.
+            run_and_check "flake8 $file" flake8 --extend-ignore=E203,W503 --max-line-length=120 "$file" || true
 
-            if [ -n "$TOOL_ERRORS" ]; then
-              SUMMARY+="\n🚨 $file:\n$TOOL_ERRORS"
-            fi
+            # Radon complexity: radon returns 0 always typically; we parse output for high complexity
+            echo "▶ radon $file (complexity analysis)"
+            radon cc "$file" -a || true
+            # radon exit code isn't reliable; optionally parse JSON if needed
 
-            echo "✅ Finished checks for $file"
-            echo ""
+            # Vulture: if it flags dead code, its rc may be non-zero; treat non-zero as warning/fail
+            run_and_check "vulture $file" vulture "$file" --min-confidence 80 || true
+
+            echo "----- Finished file: $file -----"
           done
 
-          echo "=========================================="
-          echo "📋 SUMMARY"
-          echo "=========================================="
-
-          if [ "$ERRORS_FOUND" = true ]; then
-            echo -e "$SUMMARY"
-            echo ""
-            echo "❌ One or more checks failed. Please fix the issues above."
+          echo ""
+          echo "=============================="
+          if [ "$FAIL" -ne 0 ]; then
+            echo "❌ One or more tools reported issues. Failing the step."
+            # Print helpful tip
+            echo "Tip: run the failing tools locally (mypy, pylint, flake8, bandit) to see details."
             exit 1
           else
-            echo "✅ All code quality checks passed successfully!"
+            echo "✅ All checked tools passed for changed files."
+            exit 0
           fi
+
+      - name: Skip checks (no python changes)
+        if: steps.changed_files.outputs.changed_files == ''
+        run: |
+          echo "No python files changed; skipping checks."
+
+      - name: Generate GitHub Summary
+        if: always()
+        run: |
+          echo "# Code Quality (Changed Files Only)" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Branch: \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.changed_files.outputs.changed_files }}" = "" ]; then
+            echo "No Python files changed — nothing to check." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Checked files:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "${{ steps.changed_files.outputs.changed_files }}" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
