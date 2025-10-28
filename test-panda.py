@@ -14,7 +14,7 @@ for d in data:
     total_age += d['age']
 
 # Create a DataFrame (like a table)
-df = pd.DataFrame(data)
+# df = pd.DataFrame(data)
 df = pd.DataFrame(data)
 
 # Display the table

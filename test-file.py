@@ -1,7 +1,7 @@
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 from django.template.defaultfilters import slugify
-from django.db.models.signals import pre_save, post_save, post_delete
+# from django.db.models.signals import pre_save, post_save, post_delete
 from django.db import connection
 from django.core.cache import cache
 
