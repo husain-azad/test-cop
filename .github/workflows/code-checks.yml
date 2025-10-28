@@ -128,22 +128,24 @@ jobs:
                 EXIT_CODE=1
               fi
 
-              # Type check (relaxed rules, no external stub errors)
+              # Type check
+              # Keep import errors, skip only missing type stubs
               if ! mypy \
                 --ignore-missing-imports \
-                --follow-imports=skip \
-                --disable-error-code import-untyped,var-annotated,name-defined \
+                --follow-imports=normal \
+                --disable-error-code import-untyped,var-annotated \
                 "$file"; then
-                echo "⚠️  Type check warnings ignored for $file"
+                echo "❌ Type check failed for $file"
+                EXIT_CODE=1
               fi
             fi
           done <<< "${{ steps.changed-files.outputs.files }}"
 
           if [ $EXIT_CODE -ne 0 ]; then
-            echo "❌ One or more syntax checks failed."
+            echo "❌ One or more checks failed."
             exit 1
           else
-            echo "✅ All syntax checks passed."
+            echo "✅ All checks passed successfully."
           fi
 
       - name: Skip Check (no Python files changed)
