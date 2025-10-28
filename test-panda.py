@@ -15,7 +15,6 @@ for d in data:
 
 # Create a DataFrame (like a table)
 df = pd.DataFrame(data)
-df = pd.DataFrame(data)
 
 # Display the table
 print(df)
