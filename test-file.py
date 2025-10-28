@@ -1,342 +1,369 @@
-from rest_framework import viewsets, generics, status
-from rest_framework.views import APIView
-from rest_framework.response import Response
-
-from django.db.models import Case, When
+from django.db import models
+from django.utils.translation import gettext_lazy as _
+from django.template.defaultfilters import slugify
+from django.db.models.signals import pre_save, post_save, post_delete
+from django.db import connection
 from django.core.cache import cache
 
-from utils.state_manager.mixin import StateManagerMixin
-from system.models import Chart
-from system.api.serializers.chart import ChartSerializer
-from django.db import transaction
-from django.utils.translation import gettext_lazy as _
-from users.authentication import CustomTokenAuthentication
-from copy import deepcopy
-from system.api.helper import get_custom_activity_logger, generic_old_and_new_update_values
-from system.api.views.decorators import user_access_check
-from django.core.exceptions import PermissionDenied
-from crbrm.config import REDIS_TIMEOUT
+from system.models import BaseModel
+from system.models.dimension import Dimension
 
 
-__all__ = ["ChartViewSet", "ChartNameView", "ChartListView"]
+class Attribute(BaseModel):
 
-
-class ChartViewSet(StateManagerMixin, viewsets.ModelViewSet):
     """
-    ChartViewSet is default view for :class:`.Chart`. This view operates List, Get, Update and Delete functions.
+    :class:`.Attribute` model class.
 
-    **Example Request:**
+    This model class is the smallest part of application. All models, classes, types can use this class.
+    Mostly referanced with JSON Fields.
 
-    .. code-block:: python
+    .. attribute:: variable_type
 
-        GET -> /api/system/chart/
-            data: None
+        Defines data type of related :class:`.Attribute` instance. Application will display form elements and works regarding to this field.
 
-        POST -> /api/system/chart/
+        Type Choices:
 
-        PUT -> /api/system/chart/1/
+        * String
+        * Integer
+        * Float
+        * DateTime
+        * Boolean
+        * Json
 
-        PATCH -> /api/system/chart/1/
+    .. attribute:: default
 
-        DELETE -> /api/system/chart/1/
+        Defines, default value of :class:`.Attribute`. When referanced this attibute instance, default value will be shown on the system (both UI and Backend).
 
-        Documentation : api_doc_strings/crbrm/system/api/views/chart.md #Chart-ViewSet
-    """
+    .. attribute:: icon
 
-    queryset = Chart.objects.select_related("creator").all()
-    serializer_class = ChartSerializer
-    authentication_classes = [CustomTokenAuthentication]
-    
-    # def list(self, request, *args, **kwargs):
-    #     check = user_access_check(user=request.user, required_permissions=["READ"])
-    #     if not isinstance(check, bool):
-    #         return Response(check, status=status.HTTP_400_BAD_REQUEST)
-    #
-    #     cache_key = f"{self.request.tenant}_chart_model_redis"
-    #
-    #     queryset = (
-    #         Chart.objects.select_related("creator").all().order_by("-created_at")
-    #     )
-    #
-    #     obj_ids = [i.id for i in queryset]
-    #     page = self.paginate_queryset(queryset)
-    #     if page is not None:
-    #         # cache.delete(cache_key)
-    #         if cache_key in cache:
-    #             check_cache_keys = RedisModel.check_keys(
-    #                 cache_key=cache_key, keys=obj_ids
-    #             )
-    #             cache_data_get = RedisModel.filter(cache_key=cache_key, keys=obj_ids)
-    #
-    #             if len(check_cache_keys) == 0 and cache_data_get:
-    #                 return self.get_paginated_response(cache_data_get.values())
-    #
-    #         serializer = self.get_serializer(page, many=True)
-    #         response = Response(serializer.data)
-    #
-    #         if serializer.data:
-    #             for tdata in serializer.data:
-    #                 RedisModel.create(cache_key=cache_key, key=tdata["id"], value=tdata)
-    #
-    #         return self.get_paginated_response(response.data)
-    #
-    #     serializer = self.get_serializer(queryset, many=True)
-    #     return Response(serializer.data)
+        Defines icon of defined :class:`.Attribute` instance.
 
-# new code for 12 nov
-    def list(self, request, *args, **kwargs):
-        # User access check
-        check = user_access_check(user=request.user, required_permissions=["READ"])
-        if not isinstance(check, bool):
-            return Response(check, status=status.HTTP_400_BAD_REQUEST)
+    .. attribute:: multi_value
 
-        cache_key = f"{self.request.tenant}_chart_model_redis"
-        queryset = Chart.objects.select_related("creator").all().order_by("-created_at")
-        obj_ids = [chart.id for chart in queryset]
+        Defines if attribute can store more than one value in an array. This field is related with `choice` field. If field sets as `True` then attribute store valuen in an array of values
 
-        results = []
-        fetched_cache = cache.get(cache_key) if cache_key in cache else None
+        `(['value1', 'value2', 'value3'])`
 
-        # Check for paginated response if necessary
-        page = self.paginate_queryset(queryset)
-
-        # Iterate through obj_ids and retrieve from cache or DB as needed
-        for chart_id in obj_ids:
-                if fetched_cache and chart_id in fetched_cache:
-                    results.append(fetched_cache[chart_id])
-                else:
-                    chart_object = Chart.objects.get(id=chart_id)
-                    serializer = ChartSerializer(chart_object)
-                    serializer_data = serializer.data
-                    results.append(serializer_data)
-
-                    # Update cache with newly fetched data
-                    if fetched_cache is None:
-                        new_record = {chart_id: serializer_data}
-                        cache.set(cache_key, new_record, timeout=REDIS_TIMEOUT)
-                        fetched_cache = new_record
-                    else:
-                        fetched_cache[chart_id] = serializer_data
-                        cache.set(cache_key, fetched_cache, timeout=REDIS_TIMEOUT)
-
-        if page is not None:
-            # Paginate results
-            paginated_results = self.get_paginated_response(results)
-            return paginated_results
-
-        # If not paginated, retrieve data from cache or serialize directly
-
-        data_dict = {
-            "count": len(results),
-            "results": results,
-        }
-
-        return Response(data_dict)
+        If field sets as `False` then attribute will store single value like
 
 
-    def perform_create(self, serializer):
-        check = user_access_check(user=self.request.user, required_permissions=["READ", "CREATE"])
-        if not isinstance(check, bool):
-            return Response(check, status=status.HTTP_400_BAD_REQUEST)
-        
-        with transaction.atomic():
-            transaction_point = transaction.savepoint()
-            try:
-                serializer.save(creator=self.request.user)
-                chart_obj = Chart.objects.get(id=serializer.data["id"])
-                get_custom_activity_logger("CREATE", chart_obj, self.request.user, "", model="chart")
-                transaction.savepoint_commit(transaction_point)
-            except Exception as error:
-                transaction.savepoint_rollback(transaction_point)
-                return Response({"error": _(str(error))}, status=status.HTTP_400_BAD_REQUEST)
+    .. attribute:: max_length
 
-    def update(self, request, *args, **kwargs):
-        check = user_access_check(user=self.request.user, required_permissions=["READ", "MODIFY"])
-        if not isinstance(check, bool):
-            return Response(check, status=status.HTTP_400_BAD_REQUEST)
+        Defines max length for :class:`.Attribute` value.
 
-        with transaction.atomic():
-            transaction_point = transaction.savepoint()
-            try:
-                instance = self.get_object()
-                serializer = self.get_serializer(instance, data=request.data, partial=True)
-                serializer.is_valid(raise_exception=True)
+    .. attribute:: multi_line
 
-                old_instance = deepcopy(instance)
-                serializer.save(modifier=self.request.user)
-                details = serializer.data
+        Defines if :class:`.Attribute` has more than one line or not. If this field sets to `True`, we can expect, UI will show `multi-line textbox` or `richtext editor`.
 
-                generic_old_and_new_update_values(
-                    request, request.data, old_instance, "chart", "MODIFY"
-                )
-                transaction.savepoint_commit(transaction_point)
-                return Response(details)
-            except Exception as error:
-                transaction.savepoint_rollback(transaction_point)
-                return Response({"error": _(str(error))}, status=status.HTTP_400_BAD_REQUEST)
+    .. attribute:: reset_on_clone
 
-    def get_queryset(self):
-        if getattr(self, 'swagger_fake_view', False):
-            # queryset just for schema generation metadata
-            return Chart.objects.none()
+        If this field set to True, while :class:`.Attribute` instance cloning, the data will be reset.
 
-        return super().get_queryset().filter(creator=self.request.user)
-    
-    def perform_destroy(self, instance):
-        check = user_access_check(user=self.request.user, required_permissions=["READ", "DELETE"])
-        if not isinstance(check, bool):
-            return Response(check, status=status.HTTP_400_BAD_REQUEST)
-        
-        get_custom_activity_logger("DELETE", instance, self.request.user, model="chart")
+    .. attribute:: reset_on_revision
 
-        return super().perform_destroy(instance)
+        If this field set to True, while :class:`.Attribute` instance revision, the data will be reset.
 
+    .. attribute:: is_unique
 
-class ChartNameView(StateManagerMixin, APIView):
-    """
-    ChartNameView is view for query :class:`.Chart` type with name. With this endpoint we can query related object model with name attribute.
+        Defines if :class:`.Attribute` is unique or not.
 
-    **Example Request:**
+    .. attribute:: is_active
 
-    .. code-block:: python
+        Defines if :class:`.Attribute` is active or not.
 
-        GET -> /api/system/chart/name/{chart_name}/
-            data: None
+    .. attribute:: is_indexed
 
-    Documentation : api_doc_strings/crbrm/system/api/views/chart.md Chart-Name-View
-    """
+        Defines if :class:`.Attribute` is indexed in database level or not.
 
-    authentication_classes = [CustomTokenAuthentication]
-    
-    def get(self, request, chart_name):
-        check = user_access_check(user=request.user, required_permissions=["READ"])
-        if not isinstance(check, bool):
-            return Response(check, status=status.HTTP_400_BAD_REQUEST)
-        
-        chart_obj = ChartSerializer(
-            Chart.objects.get(name=Chart, creator=self.request.user)
-        )
-        return Response(data=chart_obj.data)
+    .. attribute:: is_encrypted
 
+        Defines if :class:`.Attribute` is encrypted or not.
 
-class ChartListView(StateManagerMixin, generics.ListAPIView):
-    """
-    ChartListView returns objects, which requested with parameters.
+    .. attribute:: is_hidden
 
-    * API supports multiple ids
-    * If more than one id is given, the ids must be separated by commas.
+        Defines if :class:`.Attribute` is hidden or not.
 
-    **Example Request:**
+    .. attribute:: is_system_column
 
-    .. code-block:: python
+        Defines if the :class:`.Attribute` is system column or not.
+        If sets to `True`, related data will be stored in `Type` instance, otherwise will store on `attribute` field.
 
-        GET -> /api/system/charts/list/?ids=1
-            data: None
+    .. attribute:: dimension
 
-    **Example Response:**
+        Defines if :class:`.Attribute` has dimension relation or not.
 
-    .. code-block:: python
+    .. attribute:: css
 
-        {
-            "count": 1,
-            "next": null,
-            "previous": null,
-            "results": [
+        Default style settings for :class:`.Attribute`.
+
+    .. attribute:: is_protected
+
+        It must be set to `True` for :class:`.Attribute` created by the system, which may cause serious problems in the operation of the application if deleted.
+        Thus, the application will not allow admin and users to delete these values.
+
+    .. attribute:: allow_custom_value
+
+        If the allow_custom_value flag is true, then we can add manual entry for the selection_list at the object level.
+
+    .. attribute:: selection_list
+
+        Defines selection list for :class:`.Attribute`. This field is related with `variable_type`.
+        For using this field we need to choose `choice` from `variable_type`.
+        After that we can know that, we will display these field items as choice source.
+
+        Gender Sample:
+
+        .. code-block:: json
+
+            [
                 {
-                    "id": 1,
-                    "creator": "PLM Manager",
-                    "modifier": null,
-                    "filter_detail": {
-                        "id": 1,
-                        "creator": 1,
-                        "modifier": null,
-                        "description": null,
-                        "is_deleted": false,
-                        "deleted_at": null,
-                        "is_protected": false,
-                        "name": "test",
-                        "label": "test",
-                        "fields": [
-                            {
-                                "name": "is_latest_revision",
-                                "type": "system",
-                                "value": true,
-                                "operand": "contains"
-                            }
-                        ],
-                        "is_public": false,
-                        "is_hidden": false,
-                        "properties": null,
-                        "created_at": "2022-09-06T10:50:09.619932+00:00",
-                        "updated_at": "2022-09-06T10:50:09.619987+00:00"
-                    },
-                    "created_at": "2022-09-06T13:50:09.691173+03:00",
-                    "updated_at": "2022-09-06T13:50:09.691236+03:00",
-                    "description": null,
-                    "is_deleted": false,
-                    "deleted_at": null,
-                    "is_protected": false,
-                    "name": "test",
-                    "label": "test",
-                    "chart_type": 3,
-                    "is_hidden": false,
-                    "fields": {
-                        "type": 3,
-                        "attribute": "state",
-                        "date_type": "_week",
-                        "aggregation": "avg"
-                    },
-                    "is_public": false,
-                    "properties": null,
-                    "filter": 1
+                    "value": "female",
+                    "name": "Female"
+                },
+                {
+                    "value": "male",
+                    "name": "Male"
                 }
             ]
-        }
-    Documentation : api_doc_strings/crbrm/system/api/views/chart.md #Chart-List-View
+
+    .. attribute:: properties
+
+        Defines properties for :class:`.Attribute`. Reserved for future use. Field is JSONField.
+
     """
 
-    serializer_class = ChartSerializer
-    authentication_classes = [CustomTokenAuthentication]
-    
-    def get_queryset(self):
-        check = user_access_check(user=self.request.user, required_permissions=["READ"])
-        if not isinstance(check, bool):
-            raise PermissionDenied(_(check["error"]))
+    class VariableDataTypes(models.IntegerChoices):
+        String = 1
+        Integer = 2
+        Float = 3
+        Datetime = 4
+        Boolean = 5
+        Json = 6
+        Vector = 7
+
+    variable_type = models.IntegerField(
+        verbose_name=_("variable type"),
+        blank=False,
+        null=False,
+        choices=VariableDataTypes.choices,
+        default=1,
+    )
+
+    vector_dimension = models.PositiveIntegerField(
+        verbose_name=_("vector dimension"),
+        default=1,
+        null=False,
+        blank=False,
+    )
+
+    default = models.CharField(
+        verbose_name=_("default"),
+        max_length=240,
+        blank=True,
+        null=True,
+    )
+
+    icon = models.CharField(
+        verbose_name=_("icon"),
+        max_length=240,
+        blank=True,
+        null=True,
+    )
+
+    multi_value = models.BooleanField(
+        verbose_name=_("multi value"),
+        default=False,
+        null=False,
+        blank=False,
+    )
+
+    max_length = models.PositiveIntegerField(
+        verbose_name=_("max length"),
+        default=0,
+        null=False,
+        blank=False,
+    )
+
+    multi_line = models.BooleanField(
+        verbose_name=_("multi line"),
+        default=False,
+        null=False,
+        blank=False,
+    )
+
+    reset_on_clone = models.BooleanField(
+        verbose_name=_("reset on clone"),
+        default=False,
+        null=False,
+        blank=False,
+    )
+
+    reset_on_revision = models.BooleanField(
+        verbose_name=_("reset on revision"),
+        default=False,
+        null=False,
+        blank=False,
+    )
+
+    is_unique = models.BooleanField(
+        verbose_name=_("is unique"),
+        default=False,
+        null=False,
+        blank=False,
+    )
+
+    is_system_column = models.BooleanField(
+        verbose_name=_("is system column"),
+        default=False,
+        null=False,
+        blank=False,
+    )
+
+    is_active = models.BooleanField(
+        verbose_name=_("is active"),
+        default=True,
+        null=False,
+        blank=False,
+    )
+
+    is_indexed = models.BooleanField(
+        verbose_name=_("is indexed"),
+        default=False,
+        null=False,
+        blank=False,
+    )
+
+    is_encrypted = models.BooleanField(
+        verbose_name=_("is encrypted"),
+        default=False,
+        null=False,
+        blank=False,
+    )
+
+    is_hidden = models.BooleanField(
+        verbose_name=_("is hidden"),
+        default=False,
+        null=False,
+        blank=False,
+    )
+
+    is_rollup = models.BooleanField(
+        verbose_name=_("is rollup"),
+        default=False,
+        null=False,
+        blank=False,
+    )
+
+    allow_custom_value = models.BooleanField(
+        verbose_name=_("allow custom value"),
+        default=False,
+        null=False,
+        blank=False,
+    )
+
+    migrationpush = models.BooleanField(
+        verbose_name=_("migrationpush"),
+        default=True
+    )
+
+    dimension = models.ForeignKey(
+        Dimension,
+        verbose_name=_("dimension"),
+        on_delete=models.CASCADE,
+        related_name="%(class)s_dimension",
+        blank=True,
+        null=True,
+    )
+
+    css = models.TextField(verbose_name=_("css"), blank=True, null=True)
+
+    selection_list = models.JSONField(
+        verbose_name=_("selection_list"), blank=True, null=True
+    )
+
+    properties = models.JSONField(verbose_name=_("properties"), blank=True, null=True)
+
+    # history = get_custom_historical_record()
+
+    # region: State Manager Foreign Field Fetchers
+
+    @property
+    def sm_dimension(self):
+        id = self.dimension_id
         
-        try:
-            ids = self.request.query_params.get("ids", None)
-            ids = [x for x in ids.split(",")]
-            preserved = Case(*[When(pk=pk, then=pos) for pos, pk in enumerate(ids)])
-            queryset = Chart.objects.filter(
-                pk__in=ids, creator=self.request.user
-            ).order_by(preserved)
-        except:
-            queryset = Chart.objects.none()
-
-        return queryset
-
-
-class ChartPublicView(StateManagerMixin, generics.ListAPIView):
-    """
-    Provides a list of charts that are marked as public.
-    Checks user permissions before retrieving public charts.
-    Returns serialized chart data.
-
-    Args:
-        self.request.user (User): Authenticated user making the request.
-
-    Returns:
-        QuerySet: Filtered queryset containing only public Chart objects.
-
-    Documentation : api_doc_strings/crbrm/system/api/views/chart.md #Chart-Public-View
-    """
-    queryset = Chart.objects.all()
-    serializer_class = ChartSerializer
-    authentication_classes = [CustomTokenAuthentication]
-    
-    def get_queryset(self):
-        check = user_access_check(user=self.request.user, required_permissions=["READ"])
-        if not isinstance(check, bool):
-            raise PermissionDenied(_(check["error"]))
+        if id is None:
+            return None
         
-        return super().get_queryset().filter(is_public=True)
+        if hasattr(self, "_cached_sm_dimension") and self._cached_sm_dimension.id == id:
+            return self._cached_sm_dimension
+        
+        # from utils.state_manager.request_context import get_state_manager
+
+        # instance = get_state_manager().get_dimension_by_id(id, disable_all_checks=True)
+
+        # State Manager doesn't have Dimension support yet
+        instance = self.dimension
+        self._cached_sm_dimension = instance
+        return instance
+    
+    # endregion: State Manager Foreign Field Fetchers
+
+    class Meta:
+        verbose_name = "attribute"
+        verbose_name_plural = "attributes"
+
+    def __str__(self):
+        return self.label
+
+
+def on_pre_save(sender, instance, *args, **kwargs):
+    if not instance.name:
+        instance.name = slugify(instance.label)
+
+
+pre_save.connect(on_pre_save, Attribute)
+
+
+def on_post_save(sender, instance, created, **kwargs):
+    from system.api.serializers.attribute import AttributeSerializer
+    from system.documents.redis_document import RedisModel
+
+    tenant = connection.schema_name
+
+    cache_key = f"{tenant}_attribute_model_redis"
+
+    attributes_data_key = f"{tenant}_attributes_data"
+    new_att_type_key = f"{tenant}_new_att_type"
+
+    cache.delete(attributes_data_key)
+    cache.delete(new_att_type_key)
+
+    if created:
+        new_data = AttributeSerializer(instance)
+        RedisModel.create(cache_key=cache_key, key=instance.id, value=new_data.data)
+    else:
+        RedisModel.remove(cache_key=cache_key, key=instance.id)
+
+
+post_save.connect(on_post_save, Attribute)
+
+
+def on_post_delete(sender, instance, *args, **kwargs):
+    from system.documents.redis_document import RedisModel
+    from system.api.helper import get_custom_activity_logger
+
+    tenant = connection.schema_name
+
+    cache_key = f"{tenant}_attribute_model_redis"
+    attributes_data_key = f"{tenant}_attributes_data"
+    new_att_type_key = f"{tenant}_new_att_type"
+
+    cache.delete(attributes_data_key)
+    cache.delete(new_att_type_key)
+
+    RedisModel.remove(cache_key=cache_key, key=instance.id)
+
+    get_custom_activity_logger("DELETE", instance, instance.creator, model="attribute")
+
+
+post_delete.connect(on_post_delete, Attribute)
