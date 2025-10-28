@@ -1,307 +1,810 @@
-from rest_framework import viewsets, status
-from rest_framework.response import Response
-from django.core.cache import cache
-from rest_framework.views import APIView
-from copy import deepcopy
+from simple_history.admin import SimpleHistoryAdmin
+
+from django.contrib import admin
+from system.models import *
+from system.forms import MethodAdminForm
+from crbrm import config
+from ..models.tenant_settings import TenantSettings
+
+from django.utils.safestring import mark_safe
+from openpyxl import Workbook
+from django.apps import apps
+from django.http import HttpResponse
+from users.forms import UserManageLayoutForm, TabForm
 from utils.state_manager.mixin import StateManagerMixin
-from system.models import Card, Type
-from system.api.serializers.card import CardSerializer, MaskCardSerializer
-from users.authentication import CustomTokenAuthentication
-from system.tasks.notification import test_send_notification_to_subscribers
-from system.api.helper import get_custom_activity_logger, generic_old_and_new_update_values
-from system.documents.redis_document import RedisModel
-from django.db import transaction
-from django.utils.translation import gettext_lazy as _
-from system.api.views.decorators import user_access_check
-from crbrm.config import REDIS_TIMEOUT
+from import_export.admin import ImportExportModelAdmin
+from .export_resources import (
+    AccessRightResource,
+    AttributeResource,
+    ChartResource,
+    CollectionResource,
+    CommandResource,
+    CommandGroupResource,
+    DimensionResource,
+    FormResource,
+    FilterResource,
+    HookResource,
+    LifecycleResource,
+    MenuResource,
+    MethodResource,
+    ObjectResource,
+    RelationResource,
+    RelationshipResource,
+    SequenceResource,
+    StateResource,
+    TabFavoriteResource,
+    TabResource,
+    TableResource,
+    TypeResource,
+    ViewResource,
+    WorkspaceResource,
+    Notification,
+    WidgetResource,
+    UserManageLayoutResource,
+    PqlResource
+)
+from utils.state_manager.admin_site import state_manager_admin_site
 
-__all__ = ["CardViewSet"]
+from system.documents.attribute_document_multi_tenant import (
+    delete_attribute_document,
+)
 
+__all__ = [
+    "AttributeAdmin",
+    "DimensionAdmin",
+    "LifeCycleAdmin",
+    "RelationshipAdmin",
+    "RelationAdmin",
+    "SequenceAdmin",
+    "FilterAdmin",
+    "ChartAdmin",
+    "SequenceNumeratorAdmin",
+    "StateAdmin",
+    "TypeAdmin",
+    "MethodAdmin",
+    "HookAdmin",
+    "AccessRightAdmin",
+    "CommandAdmin",
+    "MenuAdmin",
+    "TabFavoriteAdmin",
+    "TabAdmin",
+    "WorkspaceAdmin",
+    "FormAdmin",
+    "ViewAdmin",
+    "ObjectAdmin",
+    "TableAdmin",
+    "FileAdmin",
+    "SearchHistoryAdmin",
+    "WidgetAdmin",
+    "UserManageLayoutAdmin",
+]
 
-class CardViewSet(StateManagerMixin, viewsets.ModelViewSet):
-    """
-    CardViewSet is default view for :class:`.Card`. This view operates List, Get, Update and Delete functions.
-
-    **Example Request:**
-
-    .. code-block:: python
-
-        GET -> /api/system/card/
-            data: None
-
-        GET -> /api/system/card/?mask=basic
-            -> If mask=basic then it returns the basic information(id, name, label).
-
-        GET -> /api/system/card/?card_type=Workflow
-
-        POST -> /api/system/card/
-
-        PUT -> /api/system/card/1/
-
-        PATCH -> /api/system/card/1/
-
-        DELETE -> /api/system/card/1/
-
-    Documentation : api_doc_strings/crbrm/system/api/views/card.md #Card-ViewSet
-    """
-
-    queryset = Card.objects.select_related("creator", "type").all().order_by("-created_at")
-    serializer_class = CardSerializer
-    authentication_classes = [CustomTokenAuthentication]
-
-    # New card list code 12 Nov
-    def list(self, request, *args, **kwargs):
-        from utils.state_manager.request_context import get_state_manager
-        manager = get_state_manager()
-        if manager is None:
-            return Response({"error": "State manager not found"}, status=status.HTTP_400_BAD_REQUEST)
-        
-        check = user_access_check(user=request.user, required_permissions=["READ"])
-        if not isinstance(check, bool):
-            return Response(check, status=status.HTTP_400_BAD_REQUEST)
-
-        cache_key = f"{self.request.tenant}_new_card_model_redis"
-        type_id = request.GET.get("type_id", None)
-        card_type = request.GET.get("card_type", None)
-        is_mask = self.request.GET.get("mask", "detail")
-
-        # if type_id == "null" and card_type:
-        #     query = f"""SELECT * FROM "system_card" WHERE (NOT ("system_card"."is_deleted") AND "system_card"."card_type" = '{str(card_type)}' AND "system_card"."type_id" IS NULL) ORDER BY "system_card"."created_at" DESC;"""
-        # elif type_id and card_type:
-        #     query = f"""SELECT * FROM "system_card" WHERE (NOT ("system_card"."is_deleted") AND "system_card"."card_type" = '{str(card_type)}' AND "system_card"."type_id" = {int(type_id)}) ORDER BY "system_card"."created_at" DESC"""
-        # elif type_id == "null":
-        #     query = """SELECT * FROM "system_card" WHERE (NOT ("system_card"."is_deleted") AND "system_card"."type_id" IS NULL) ORDER BY "system_card"."created_at" DESC;"""
-        # elif type_id:
-        #     query = f"""SELECT * FROM "system_card" WHERE (NOT ("system_card"."is_deleted") AND "system_card"."type_id" = {int(type_id)}) ORDER BY "system_card"."created_at" DESC;"""
-        # elif card_type:
-        #     query = f"""SELECT * FROM "system_card" WHERE (NOT ("system_card"."is_deleted") AND "system_card"."card_type" = '{str(card_type)}') ORDER BY "system_card"."created_at" DESC;"""
-        # else:
-        #     query = """SELECT * FROM "system_card" WHERE NOT ("system_card"."is_deleted") ORDER BY "system_card"."created_at" DESC;"""
-
-        # queryset = Card.objects.raw(query)
-
-        filters = {"is_deleted": False}
-
-        # Handle type_id
-        if type_id == "null":
-            filters["type_id__isnull"] = True
-        elif type_id:
-            filters["type_id"] = int(type_id)
-
-        # Handle card_type
-        if card_type:
-            filters["card_type"] = card_type
-
-        # Get queryset
-        queryset = manager.filter_cards(**filters)
+from django_tenants.utils import get_public_schema_name
 
 
-        # Final ordering
-        queryset = sorted(queryset, key=lambda card: card.created_at, reverse=True)
-    
-        # fallback to parent if child has no cards
-        if not queryset and type_id:
-            try:
-                # current_type = Type.objects.filter(id=int(type_id)).first()
-                current_type = manager.get_type_by_id(int(type_id))
-                if current_type and current_type.parent_id:
-                    parent_type_id = current_type.parent_id
-                    # query = query.replace(
-                    #     f'"system_card"."type_id" = {int(type_id)}',
-                    #     f'"system_card"."type_id" = {parent_type_id}'
-                    # )
-                    # queryset = list(Card.objects.raw(query))
-                    # queryset = Card.objects.filter(type_id=parent_type_id)
-                    queryset = manager.filter_cards(type_id =int(parent_type_id))
-                    queryset = sorted(queryset, key=lambda card: card.created_at, reverse=True)
+class PrivateTenantOnlyMixin:
+    """Allow Access to Private Tenant Only."""
 
-            except Exception as e:
-                pass
+    def _only_private_tenant_access(self, request):
+        return True if request.tenant.schema_name != get_public_schema_name() else False
 
-        if is_mask.lower() == "basic":
-            serializer = MaskCardSerializer(queryset, many=True)
-            return Response(data={"count": len(queryset), "results": serializer.data})
-        # fetched_cache = cache.get(cache_key) if cache_key in cache else None
-        results = []
-        obj_ids = [i.id for i in queryset]
-        card_map = {card.id : card for card in queryset}
+    def has_view_permission(self, request, view=None):
+        return self._only_private_tenant_access(request)
 
-        # results = list(map(lambda card_id: fetched_cache.get(card_id) or card_map[card_id], obj_ids))
+    def has_add_permission(self, request, view=None):
+        return self._only_private_tenant_access(request)
 
-        def get_card_or_fetch(card_id):
-            fetched_card = None
-            if cache_key:
-                fetched_card = RedisModel.get(cache_key=cache_key, key=card_id)
+    def has_change_permission(self, request, view=None):
+        return self._only_private_tenant_access(request)
 
-            if fetched_card != False:
-                return fetched_card
+    def has_delete_permission(self, request, view=None):
+        return self._only_private_tenant_access(request)
 
-            card_object = card_map.get(card_id)
-            if card_object:
-                serializer = CardSerializer(card_object)
-                serializer_data = serializer.data
-                RedisModel.create(cache_key=cache_key, key=card_object.id, value=serializer_data)
-                return serializer_data
+    def has_view_or_change_permission(self, request, view=None):
+        return self._only_private_tenant_access(request)
 
-            return None
-        results = list(filter(None, map(get_card_or_fetch, obj_ids)))
 
-         
-        # for card_id in obj_ids:
-        #     # Check if card data is in cache
-        #     if fetched_cache and card_id in fetched_cache:
-        #         results.append(fetched_cache[card_id])
-        #     else:
-        #         # Fetch card data from database if not in cache
-        #         card_object = Card.objects.get(id=card_id)
-        #         serializer = CardSerializer(card_object)
-        #         serializer_data = serializer.data
-        #         results.append(serializer_data)
+class AccessRightAdmin( PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin ):
+    list_display = ("id", "label")
+    resource_class = AccessRightResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
 
-        #         # Update cache with new data
-        #         if fetched_cache is None:
-        #             new_record = {card_id: serializer_data}
-        #             cache.set(cache_key, new_record, timeout=REDIS_TIMEOUT)
-        #             fetched_cache = new_record
-        #         else:
-        #             fetched_cache[card_id] = serializer_data
-        #             cache.set(cache_key, fetched_cache, timeout=REDIS_TIMEOUT)
 
-        # Prepare the response data
-        data_dict = {
-            "count": len(results),
-            "results": results,
-        }
+class AttributeAdmin( PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin ):
+    list_display = ("id", "label", "selection_list", "is_indexed")
+    resource_class = AttributeResource
+    search_fields = ["id", "name", "label"]
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
 
-        return Response(data_dict)
+    model_name = "attribute"
 
-    
-    # Old card list code ----------
-    # def list(self, request, *args, **kwargs):
-    #     cache_key = f"{self.request.tenant}_card_model_redis"
-    #     type_id = self.request.GET.get("type_id", None)
-    #     card_type = self.request.GET.get("card_type", None)
-    #
-    #     if type_id == "null" and card_type:
-    #         queryset = Card.objects.filter(
-    #             type__id=None, card_type=str(card_type)
-    #         ).select_related("creator", "type").order_by("-created_at")
-    #     elif type_id and card_type:
-    #         queryset = Card.objects.filter(
-    #             type__id=type_id, card_type=str(card_type)
-    #         ).select_related("creator", "type").order_by("-created_at")
-    #     elif type_id == "null":
-    #         queryset = Card.objects.filter(type__id=None).select_related("creator", "type").order_by("-created_at")
-    #     elif type_id:
-    #         queryset = Card.objects.filter(type__id=type_id).select_related("creator", "type").order_by("-created_at")
-    #     elif card_type:
-    #         queryset = Card.objects.filter(card_type=str(card_type)).select_related("creator", "type").order_by(
-    #             "-created_at"
-    #         )
-    #     else:
-    #         queryset = (
-    #             Card.objects.select_related("creator", "type")
-    #             .all()
-    #             .order_by("-created_at")
-    #         )
-    #
-    #     obj_ids = list(queryset.values_list("id", flat=True))
-    #
-    #     if cache_key in cache:
-    #         check_cache_keys = RedisModel.check_keys(
-    #             cache_key=cache_key, keys=obj_ids
-    #         )
-    #         cache_data_get = RedisModel.filter(cache_key=cache_key, keys=obj_ids)
-    #
-    #         if len(check_cache_keys) == 0 and cache_data_get:
-    #             return Response(data={"count": len(cache_data_get.keys()), "results": cache_data_get.values()})
-    #
-    #     serializer = self.get_serializer(queryset, many=True)
-    #     if serializer.data:
-    #         for tdata in serializer.data:
-    #             RedisModel.create(cache_key=cache_key, key=tdata["id"], value=tdata)
-    #
-    #     return Response(data={"count": queryset.count(), "results": serializer.data})
+    def delete_model(self, request, obj):
+        """
+        Deletes the model instance and the corresponding AttributeDocument from Elasticsearch.
 
-    def perform_create(self, serializer):
-        check = user_access_check(user=self.request.user, required_permissions=["READ", "CREATE"])
-        if not isinstance(check, bool):
-            return Response(check, status=status.HTTP_400_BAD_REQUEST)
-        
-        with transaction.atomic():
-            transaction_point = transaction.savepoint()
-            try:
-                serializer.save(creator=self.request.user)
-                details = serializer.data
+        Args:
+            request: The current request.
+            obj: The model instance being deleted.
+        """
+        host = request.get_host().lower()
 
-                test_send_notification_to_subscribers(
-                    tenant=self.request.tenant,
-                    user=self.request.user,
-                    object_id=details["id"],
-                    event_id=7,
-                    type="success",
-                    detail_url=f"/api/system/card/{details['id']}/",
-                    model="card",
-                    nt_key=True,
-                )
+        tenant = host.split(".")[0]
 
-                # card_obj = Card.objects.get(id=details["id"])
-                transaction.savepoint_commit(transaction_point)
-                # get_custom_activity_logger(
-                #     "CREATE", card_obj, self.request.user, "", model="card"
-                # )
-            except Exception as error:
-                transaction.savepoint_rollback(transaction_point)
-                return Response({"error": _(str(error))}, status=status.HTTP_400_BAD_REQUEST)
+        super().delete_model(request, obj)
+
+        delete_attribute_document(obj, f"{tenant}_{self.model_name}")
+
+    def delete_queryset(self, request, queryset):
+        """
+        Deletes the queryset of model instances and their corresponding AttributeDocument from Elasticsearch.
+
+        Args:
+            request: The current request.
+            queryset: The queryset of model instances being deleted.
+        """
+        host = request.get_host().lower()
+
+        tenant = host.split(".")[0]
+        for obj in queryset:
+            delete_attribute_document(obj, f"{tenant}_{self.model_name}")
+
+        super().delete_queryset(request, queryset)
+
+
+class CollectionAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin ):
+    list_display = ("id", "label", "creator")
+    search_fields = ["id", "name", "label"]
+    resource_class = CollectionResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+
+    def save_model(self, request, obj, form, change):
+        if change:  # Check if this is an update
+            old_obj = Collection.objects.get(pk=obj.pk)
+            if old_obj.label != obj.label:  # Check if the label field is updated
+                if (Collection.objects.filter(label=obj.label, creator=obj.creator).exists()
+                    or Collection.recycle.filter(label=obj.label, creator=obj.creator).exists()):
+                    raise ValidationError(f"Collection with this label: {obj.label} already exists.")
+                
+            return super().save_model(request, obj, form, change)
+        else:  # This is a new instance
+            if (Collection.objects.filter(label=obj.label, creator=obj.creator).exists()
+                or Collection.recycle.filter(label=obj.label, creator=obj.creator).exists()):
+                raise ValidationError(f"Collection with this label: {obj.label} already exists.")
             
-    def update(self, request, *args, **kwargs):
-        check = user_access_check(user=self.request.user, required_permissions=["READ", "MODIFY"])
-        if not isinstance(check, bool):
-            return Response(check, status=status.HTTP_400_BAD_REQUEST)
+            return super().save_model(request, obj, form, change)
+    
 
-        with transaction.atomic():
-            transaction_point = transaction.savepoint()
-            try:
-                instance = self.get_object()
-                serializer = self.get_serializer(instance, data=request.data, partial=True)
-                serializer.is_valid(raise_exception=True)
-                old_instance = deepcopy(instance)
+class CommandAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "label")
+    resource_class = CommandResource
+    search_fields = ["id", "name", "label"]
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
 
-                serializer.save(modifier=self.request.user)
-                details = serializer.data
+class CommandGroupAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "label")
+    search_fields = ["id", "name", "label"]
+    resource_class = CommandGroupResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
 
-                generic_old_and_new_update_values(
-                    request, request.data, old_instance, "card", "MODIFY"
+class DimensionAdmin( PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin ):
+    list_display = ("id", "label")
+    resource_class = DimensionResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+
+
+class FilterAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "name", "label", "creator", "is_public")
+    search_fields = ["id", "name", "label"]
+    resource_class = FilterResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+
+
+class ChartAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "label")
+    search_fields = ["id", "name", "label"]
+    resource_class = ChartResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+
+
+class FormAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "label")
+    search_fields = ["id", "name", "label"]
+    resource_class = FormResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+
+
+class HookAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "label", "hook_type", "hook_action")
+    search_fields = ["id", "name", "label"]
+    resource_class = HookResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+
+
+class LifeCycleAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "label")
+    search_fields = ["id", "name", "label"]
+    resource_class = LifecycleResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+
+    model_name = "lifecycle"
+
+
+class MenuAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "label", "context_type", "type", "is_default")
+    search_fields = ["id", "name", "label", "context_type"]
+    resource_class = MenuResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+
+
+class MethodAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = (
+        "id",
+        "label",
+        "name",
+        "is_dynamic",
+    )
+    resource_class = MethodResource
+    history_list_display = ("ip_address",)
+    # change_form_template = 'admin/custom_change_form.html'
+    save_on_top = True
+    form = MethodAdminForm
+    readonly_fields = ("created_at", "updated_at", "deleted_at")
+    autocomplete_fields = ("used_methods",)
+    search_fields = ("name", "label")
+    fieldsets = (
+        ("Code Block", {"fields": ("body", "used_methods")}),
+        (
+            "Method Form",
+            {"fields": ("name", "label", "description", "version", "creator")},
+        ),
+        (
+            "Controller",
+            {
+                "fields": (
+                    "is_hidden",
+                    "is_deleted",
+                    "is_protected",
+                    "is_active",
+                    "is_dynamic",
+                    "is_hook",
+                    "is_timeseries",
+                    "migrationpush",
+                    "properties",
+                    "context_type",
                 )
-                transaction.savepoint_commit(transaction_point)
-                return Response(details)
-            except Exception as error:
-                transaction.savepoint_rollback(transaction_point)
-                return Response({"error": _(str(error))}, status=status.HTTP_400_BAD_REQUEST)   
+            },
+        ),
+        ("Times", {"fields": ("created_at", "updated_at", "deleted_at")}),
+    )
 
-    def destroy(self, request, *args, **kwargs):
-        check = user_access_check(user=self.request.user, required_permissions=["READ", "DELETE"])
-        if not isinstance(check, bool):
-            return Response(check, status=status.HTTP_400_BAD_REQUEST)
-        
-        instance = self.get_object()
-        self.perform_destroy(instance)
 
-        test_send_notification_to_subscribers(
-            tenant=self.request.tenant,
-            user=self.request.user,
-            object_id=None,
-            event_id=8,
-            type="success",
-            detail_url=None,
-            model=None,
-            isError=True,
-            error_message=f"Card with id: {instance.pk} is deleted successfully.",
-        )
+class ObjectAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin, StateManagerMixin):
 
-        get_custom_activity_logger("DELETE", instance, self.request.user, model="card")
+    list_display = (
+        "db_id",
+        "name",
+        "type",
+        "from_relation_count",
+        "to_relation_count",
+        "object_id",
+    )
+    resource_class = ObjectResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
 
-        return Response(
-            {"message": "Card is deleted successfully."},
-            status=status.HTTP_204_NO_CONTENT,
-        )
+    search_fields = ["name", "object_id"]
+
+    model_name = "object"
+
+    def _get_manager_and_tenant(self, request):
+        from utils.state_manager.request_context import get_state_manager
+        from rest_framework.response import Response
+        from rest_framework import status
+
+        manager = get_state_manager()
+        if not manager:
+            return Response(
+                {"error": "State manager not found"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        host = request.get_host().lower()
+        tenant = host.split(".")[0]
+        return manager, tenant
+    
+    def save_model(self, request, obj, form, change):
+        """
+        Saves the model instance and updates the corresponding ObjectDocument in Elasticsearch.
+
+        Args:
+            request: The current request.
+            obj: The model instance being saved.
+            form: The form used for saving the instance.
+            change (bool): Indicates if the instance is being updated.
+        """
+        result = self._get_manager_and_tenant(request)
+        if not isinstance(result, tuple):  # means it's a Response
+            return result
+
+        manager, tenant = result
+        # if change:
+        manager.index(objects=[obj])
+
+        super().save_model(request, obj, form, change)
+
+    def delete_model(self, request, obj):
+        """
+        Deletes the model instance and the corresponding ObjectDocument from Elasticsearch.
+
+        Args:
+            request: The current request.
+            obj: The model instance being deleted.
+        """
+        result = self._get_manager_and_tenant(request)
+        if not isinstance(result, tuple):
+            return result
+
+        manager, tenant = result
+        manager.index_delete(object_db_ids=[obj.db_id])
+
+        super().delete_model(request, obj)
+
+    def delete_queryset(self, request, queryset):
+        """
+        Deletes the queryset of model instances and their corresponding ObjectDocuments from Elasticsearch.
+
+        Args:
+            request: The current request.
+            queryset: The queryset of model instances being deleted.
+        """
+        result = self._get_manager_and_tenant(request)
+        if not isinstance(result, tuple):
+            return result
+
+        manager, tenant = result
+        manager.index_delete(object_db_ids=list(object.db_id for object in queryset))
+
+        super().delete_queryset(request, queryset)
+
+class RelationAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin,StateManagerMixin):
+    list_display = ("id", "name", "relationship", "quantity", "from_id", "to_id")
+    resource_class = RelationResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+
+    search_fields = ["label", "from_id", "to_id", "name"]
+
+    model_name = "relation"
+
+    def _get_manager_and_tenant(self, request):
+        """Return (manager, tenant) or None if manager is missing."""
+        from utils.state_manager.request_context import get_state_manager
+        from rest_framework.response import Response
+        from rest_framework import status
+
+        manager = get_state_manager()
+        if not manager:
+            return Response(
+                {"error": "State manager not found"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        host = request.get_host().lower()
+        tenant = host.split(".")[0]
+        return manager, tenant
+
+    def save_model(self, request, obj, form, change):
+        """
+        Saves the model instance and updates the corresponding RelationDocument in Elasticsearch.
+
+        Args:
+            request: The current request.
+            obj: The model instance being saved.
+            form: The form used for saving the instance.
+            change (bool): Indicates if the instance is being updated.
+        """
+        result = self._get_manager_and_tenant(request)
+        if not isinstance(result, tuple):  # means it's a Response
+            return result
+
+        manager, tenant = result
+
+        manager.index(relations=[obj])
+        super().save_model(request, obj, form, change)
+
+    def delete_model(self, request, obj):
+        """
+        Deletes the model instance and the corresponding RelationDocument from Elasticsearch.
+
+        Args:
+            request: The current request.
+            obj: The model instance being deleted.
+        """
+        result = self._get_manager_and_tenant(request)
+        if not isinstance(result, tuple):
+            return result
+
+        manager, tenant = result
+        manager.index_delete(relation_ids=[obj.id])
+        super().delete_model(request, obj)
+
+    def delete_queryset(self, request, queryset):
+        """
+        Deletes the queryset of model instances and their corresponding RelationDocument from Elasticsearch.
+
+        Args:
+            request: The current request.
+            queryset: The queryset of model instances being deleted.
+        """
+        result = self._get_manager_and_tenant(request)
+        if not isinstance(result, tuple):
+            return result
+
+        manager, tenant = result
+        manager.index_delete(relation_ids=[obj.id for obj in queryset])
+        # for obj in queryset:
+        #     manager.index_delete(relation_ids=[obj])
+
+        super().delete_queryset(request, queryset)
+
+
+class RelationshipAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "label", "is_structured")
+    search_fields = ["id", "name", "label"]
+    resource_class = RelationshipResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+
+
+class SequenceAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "label")
+    resource_class = SequenceResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+
+
+class SequenceNumeratorAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "type_id")
+    history_list_display = ("ip_address",)
+
+class StateAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "label")
+    search_fields = ["id", "name", "label"]
+    resource_class = StateResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+
+    model_name = "state"
+
+class TabFavoriteAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "label")
+    resource_class = TabFavoriteResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+
+class TabAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "label")
+    resource_class = TabResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+    form = TabForm
+
+class TableAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "label")
+    search_fields = ["id", "name", "label"]
+    resource_class = TableResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+
+
+class TypeAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "label")
+    search_fields = ["id", "name", "label"]
+    resource_class = TypeResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+
+
+class ViewAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "label")
+    resource_class = ViewResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+
+
+class WorkspaceAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "label")
+    search_fields = ["id", "name", "label"]
+    resource_class = WorkspaceResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+
+
+class FileAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "label", "file")
+    history_list_display = ("ip_address",)
+    readonly_fields = ("file_code","created_at", "updated_at", "last_accessed_at")
+
+    search_fields = ["id", "name", "label", "file_code"]
+
+    def file(self, object):
+        return mark_safe(f'<a href="{object.url}" target="_blank">{object.original_filename}</a>')
+
+class DashboardAdmin(PrivateTenantOnlyMixin, admin.ModelAdmin):
+    list_display = ("id", "label", "creator")
+    readonly_fields = ("created_at", "updated_at")
+
+
+class FilterMenuAdmin(PrivateTenantOnlyMixin, admin.ModelAdmin):
+    list_display = ("id", "label")
+    readonly_fields = ("created_at", "updated_at")
+
+
+class LicenseAdmin(PrivateTenantOnlyMixin, admin.ModelAdmin):
+    list_display = ("id", "label")
+    readonly_fields = ("created_at", "updated_at")
+
+
+class SubscribedUserAdmin(PrivateTenantOnlyMixin, admin.ModelAdmin):
+    list_display = ("id", "object_id")
+
+
+class SearchHistoryAdmin(PrivateTenantOnlyMixin, admin.ModelAdmin):
+    list_display = (
+        "id",
+        "creator",
+        "searched_content",
+    )
+    search_fields = ["id", "searched_content"]
+
+
+class NotificationAdmin(PrivateTenantOnlyMixin, admin.ModelAdmin):
+    list_display = ("id", "name", "notification_type")
+    search_fields = ["id", "name", "object_id"]
+    readonly_fields = ("created_at", "updated_at")
+
+
+class NotificationTemplateAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, admin.ModelAdmin):
+    list_display = (
+        "id",
+        "get_access_type_display",
+        "notification_sendtype",
+        "notification_type",
+        "nt_key_details",
+    )
+
+    def get_access_type_display(self, obj):
+        data = dict(AccessRight.AccessType.choices)
+        return data[int(obj.access_type)]
+
+    readonly_fields = ("nt_key",)
+
+
+class IconAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, admin.ModelAdmin):
+    list_display = ("id", "name", "icon_type", "status")
+    readonly_fields = ("created_at", "updated_at")
+
+
+class HistoryAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, admin.ModelAdmin):
+    list_display = ("object_id", "user", "event", "model", "created_at")
+    search_fields = ["id", "event", "object_id"]
+    readonly_fields = ("created_at",)
+
+
+class CardAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "label")
+    search_fields = ["id", "name", "label"]
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+
+
+class TenantSettingsAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "category", "name", "label", "active")
+    search_fields = ["id", "name", "label"]
+    readonly_fields = ("created_at", "updated_at")
+
+    # Define the export action
+    def export_all_models(self, request, queryset):
+        # Initialize a new workbook
+        workbook = Workbook()
+
+        # Rename the default active sheet
+        active_sheet = workbook.active
+        active_sheet.title = "Summary"
+
+        # List of models to export
+        models_to_export = [
+        'Attribute', 'Dimension', 'Lifecycle', 'Relationship', 'Sequence',
+        'SequenceNumerator', 'State', 'Type', 'Method', 'Hook', 'AccessRight',
+        'Command', 'CommandGroup', 'Menu', 'Filter', 'FilterMenu', 'Dashboard',
+        'Chart', 'TabFavorite','Tab', 'Workspace', 'Form', 'View', 'table', 'File',
+        'Collection', 'License', 'SubscribedUser', 'SearchHistory',
+        'NotificationTemplate', 'Icon', 'Card', 'TenantSettings',
+        ]
+
+        try:
+            # Iterate over each model and add data to a new sheet
+            for model_name in models_to_export:
+                try:
+                    model = apps.get_model(app_label='system', model_name=model_name)
+                    sheet = workbook.create_sheet(title=model_name)
+
+                    # Write header row
+                    fields = [field.name for field in model._meta.fields]
+                    sheet.append(fields)
+
+                    # Write data rows
+                    for obj in model.objects.all():
+                        row = []
+                        for field in fields:
+                            value = getattr(obj, field)
+
+                            # Convert non-primitive types to strings
+                            if isinstance(value, (int, float, str, bool, None.__class__)):
+                                row.append(value)
+                            else:
+                                row.append(str(value))
+                        sheet.append(row)
+                except LookupError:
+                    print(f"Model {model_name} not found.")
+
+            # Remove the default empty sheet if unused
+            if "Summary" in workbook.sheetnames:
+                workbook.remove(workbook["Summary"])
+
+            # Prepare the response
+            response = HttpResponse(
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            response["Content-Disposition"] = 'attachment; filename="models_data.xlsx"'
+
+            # Save the workbook to the response
+            workbook.save(response)
+            return response
+
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            raise
+
+    # Ignore queryset and make the action work without selected items
+    export_all_models.short_description = "Export all models data as an Excel file with multiple sheets"
+    actions = ["export_all_models"]
+
+    def has_module_permission(self, request):
+        return True  # Allow module-level access
+
+
+class CollectionObjectAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id","display", "collection", "collection_object", "is_cut")
+
+    def display(self, obj):
+        return str(obj)
+
+
+class CollaborationAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, admin.ModelAdmin):
+    search_fields = ["id", "object_id"]
+    list_display = ("id", "object_id", "created_at")
+
+class WidgetAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "label")
+    resource_class = WidgetResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+
+    fieldsets = (
+        (None, {
+            "fields": (
+                "name", 
+                "label", 
+                "creator",
+                "modifier",
+                "description",
+                "is_deleted",
+                "deleted_at",
+                "is_protected",
+                "is_public",
+                "migrationpush",
+                "properties",
+                "created_at",
+                "updated_at",
+            ),
+        }),
+    )
+
+class UserManageLayoutAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "name")
+    resource_class = UserManageLayoutResource
+    history_list_display = ("ip_address",)
+    readonly_fields = ("created_at", "updated_at")
+    form = UserManageLayoutForm
+
+
+class PqlAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = ("id", "name", "label", "creator", "is_public")
+    search_fields = ["id", "name", "label"]
+    resource_class = PqlResource
+    readonly_fields = ("created_at", "updated_at")
+
+
+class TimeSeriesAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = (
+        "id",
+        "label",
+        "name",
+        "is_active",
+    )
+    readonly_fields = ("created_at", "updated_at", "deleted_at", "last_run_at", "data")
+    search_fields = ("name", "label")
+
+
+class ApiSchedulerAdmin(PrivateTenantOnlyMixin, ImportExportModelAdmin, SimpleHistoryAdmin):
+    list_display = (
+        "id",
+        "schedule_type",
+        "api_url",
+        "is_active",
+        "is_completed"
+    )
+    readonly_fields = ("created_at", "updated_at", "deleted_at" , "last_run_at")
+    search_fields = ("api_url", "label")
+
+
+
+state_manager_admin_site.register(TenantSettings, TenantSettingsAdmin)
+
+state_manager_admin_site.register(Attribute, AttributeAdmin)
+state_manager_admin_site.register(Dimension, DimensionAdmin)
+state_manager_admin_site.register(Lifecycle, LifeCycleAdmin)
+state_manager_admin_site.register(Relationship, RelationshipAdmin)
+state_manager_admin_site.register(Relation, RelationAdmin)
+state_manager_admin_site.register(Sequence, SequenceAdmin)
+state_manager_admin_site.register(SequenceNumerator, SequenceNumeratorAdmin)
+state_manager_admin_site.register(State, StateAdmin)
+state_manager_admin_site.register(Type, TypeAdmin)
+state_manager_admin_site.register(Object, ObjectAdmin)
+state_manager_admin_site.register(Method, MethodAdmin)
+state_manager_admin_site.register(Hook, HookAdmin)
+state_manager_admin_site.register(AccessRight, AccessRightAdmin)
+state_manager_admin_site.register(Command, CommandAdmin)
+state_manager_admin_site.register(CommandGroup, CommandGroupAdmin)
+state_manager_admin_site.register(Menu, MenuAdmin)
+state_manager_admin_site.register(Filter, FilterAdmin)
+state_manager_admin_site.register(FilterMenu, FilterMenuAdmin)
+state_manager_admin_site.register(Dashboard, DashboardAdmin)
+state_manager_admin_site.register(Chart, ChartAdmin)
+state_manager_admin_site.register(TabFavorite, TabFavoriteAdmin)
+state_manager_admin_site.register(Tab, TabAdmin)
+state_manager_admin_site.register(Workspace, WorkspaceAdmin)
+state_manager_admin_site.register(Form, FormAdmin)
+state_manager_admin_site.register(View, ViewAdmin)
+state_manager_admin_site.register(Table, TableAdmin)
+state_manager_admin_site.register(File, FileAdmin)
+state_manager_admin_site.register(Collection, CollectionAdmin)
+state_manager_admin_site.register(License, LicenseAdmin)
+state_manager_admin_site.register(SubscribedUser, SubscribedUserAdmin)
+state_manager_admin_site.register(SearchHistory, SearchHistoryAdmin)
+state_manager_admin_site.register(Notification, NotificationAdmin)
+state_manager_admin_site.register(NotificationTemplate, NotificationTemplateAdmin)
+state_manager_admin_site.register(Icon, IconAdmin)
+state_manager_admin_site.register(History, HistoryAdmin)
+state_manager_admin_site.register(Card, CardAdmin)
+state_manager_admin_site.register(CollectionObject, CollectionObjectAdmin)
+state_manager_admin_site.register(Collaboration, CollaborationAdmin)
+state_manager_admin_site.register(Widget, WidgetAdmin)
+state_manager_admin_site.register(UserManageLayout, UserManageLayoutAdmin)
+state_manager_admin_site.register(Pql, PqlAdmin)
+state_manager_admin_site.register(TimeSeries, TimeSeriesAdmin)
+state_manager_admin_site.register(ApiScheduler, ApiSchedulerAdmin)
+
