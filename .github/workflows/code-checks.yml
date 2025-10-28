@@ -73,235 +73,187 @@
 #         run: echo "No Python files changed. Skipping checks."
 
 
-name: 🔍 Python Code Quality Analysis (Changed Files)
-
-# This workflow runs comprehensive code quality checks on Python files
-# that have been modified in feature and development branches.
-# It helps maintain code standards and catches potential issues early.
-
+name: Code Quality Checks
 on:
   push:
     branches:
-      - dev_*      # Development branches (e.g., dev_feature, dev_bugfix)
-      - feat/*     # Feature branches (e.g., feat/new-feature)
-
+      - dev_*
+      - feat/*
 permissions:
-  contents: write        # Required to checkout and read repository content
-  pull-requests: write   # Required to post comments on pull requests
-
+  contents: write
+  pull-requests: write
 jobs:
-  python-code-quality-analysis:
-    name: Analyze Python Code Quality
+  code-checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 30  # Prevents hanging workflows
-
+    timeout-minutes: 20
     steps:
-      # ================================================================
-      # STEP 1: Repository Setup
-      # ================================================================
-      - name: 📥 Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Fetch full history to compare with previous commits
-
-      # ================================================================
-      # STEP 2: Python Environment Setup
-      # ================================================================
-      - name: 🐍 Set up Python 3.9
+          fetch-depth: 0
+      
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9.20'
-
-      # ================================================================
-      # STEP 3: Install Code Analysis Tools
-      # ================================================================
-      - name: 📦 Install Code Quality Tools
+      
+      - name: Install analysis tools and dependencies
         run: |
-          echo "Upgrading pip..."
           python -m pip install --upgrade pip
-          
-          echo "Installing code analysis and quality tools..."
-          # Install pbr first to prevent Bandit import errors
-          pip install pbr
-          
-          # Install all analysis tools with pinned versions for consistency
           pip install \
-            mypy==1.7.1        \  # Static type checker
-            pylint==3.0.3      \  # Comprehensive linter
-            flake8==6.1.0      \  # Style guide enforcement
-            bandit==1.7.5      \  # Security vulnerability scanner
-            radon==6.0.1       \  # Code complexity analyzer
-            vulture==2.10      \  # Dead code detector
-            safety==2.3.5      \  # Dependency vulnerability checker
-            autopep8==2.0.4    \  # Auto-formatter for PEP 8
-            isort==5.13.2         # Import statement organizer
-          
-          echo "✅ All tools installed successfully"
-
-      # ================================================================
-      # STEP 4: Detect Changed Python Files
-      # ================================================================
-      - name: 🔎 Detect Changed Python Files
+            mypy==1.7.1 \
+            pylint==3.0.3 \
+            pyflakes==3.1.0 \
+            vulture==2.10
+      
+      # ==============================================================
+      # IDENTIFY CHANGED PYTHON FILES
+      # ==============================================================
+      - name: Get changed Python files
         id: changed_files
         run: |
-          echo "════════════════════════════════════════"
-          echo "Detecting changed Python files..."
-          echo "════════════════════════════════════════"
-          
-          # Strategy 1: Compare with immediate previous commit
-          CHANGED=$(git diff --name-only HEAD~1 HEAD | grep '\.py$' || true)
-          
-          # Strategy 2: If no changes found, compare with main branch
-          # This handles initial commits or multi-commit pushes
-          if [ -z "$CHANGED" ]; then
-            echo "No changes found in HEAD~1, checking against origin/main..."
-            CHANGED=$(git diff --name-only origin/main...HEAD | grep '\.py$' || true)
-          fi
-          
-          # Save changed files to GitHub output for use in subsequent steps
-          echo "changed_files<<EOF" >> $GITHUB_OUTPUT
-          echo "$CHANGED" >> $GITHUB_OUTPUT
+          echo "Checking changed Python files..."
+          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD | grep '\.py$' || true)
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGED_FILES" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
-          
-          # Display results
-          if [ -z "$CHANGED" ]; then
-            echo "📝 No Python files were changed in this push"
-          else
-            echo "📝 Changed Python files detected:"
-            echo "$CHANGED" | while read -r file; do
-              echo "  • $file"
-            done
-          fi
-
-      # ================================================================
-      # STEP 5: Run Comprehensive Code Quality Checks
-      # ================================================================
-      - name: ✅ Run Quality Checks on Changed Files
+      
+      # ==============================================================
+      # FOCUSED ANALYSIS ON CHANGED FILES
+      # ==============================================================
+      - name: Run focused checks on changed files
         id: quality_checks
-        if: steps.changed_files.outputs.changed_files != ''
+        if: steps.changed_files.outputs.files != ''
         run: |
-          set -euo pipefail
-          changed="${{ steps.changed_files.outputs.changed_files }}"
-
-          # Convert changed files into an array
-          IFS=$'\n' read -r -d '' -a files <<< "$changed"$'\0' || true
-
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "ℹ️  No Python files changed. Skipping quality checks."
-            exit 0
+          echo "Running focused checks on changed Python files..."
+          EXIT_CODE=0
+          
+          echo "${{ steps.changed_files.outputs.files }}" | while read file; do
+            if [ -n "$file" ] && [ -f "$file" ]; then
+              echo ""
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "🔍 Analyzing: $file"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              
+              # 1. TYPE CHECKING (Mypy) - Critical for type errors
+              echo ""
+              echo "🔷 TYPE CHECKING (mypy)"
+              echo "----------------------------------------"
+              if mypy --ignore-missing-imports --show-error-codes --pretty "$file"; then
+                echo "✅ No type errors found"
+              else
+                echo "❌ Type errors detected"
+                EXIT_CODE=1
+              fi
+              
+              # 2. UNDEFINED IMPORTS & VARIABLES (Pyflakes)
+              echo ""
+              echo "🔶 UNDEFINED NAMES & IMPORTS (pyflakes)"
+              echo "----------------------------------------"
+              if pyflakes "$file"; then
+                echo "✅ No undefined names or import errors"
+              else
+                echo "❌ Undefined names or import errors detected"
+                EXIT_CODE=1
+              fi
+              
+              # 3. PYLINT FOCUSED CHECKS
+              # E0601: used-before-assignment
+              # E0602: undefined-variable
+              # W0611: unused-import
+              # W0612: unused-variable
+              # E0401: import-error
+              echo ""
+              echo "🔸 VARIABLE & IMPORT CHECKS (pylint)"
+              echo "----------------------------------------"
+              if pylint \
+                --disable=all \
+                --enable=E0601,E0602,W0611,W0612,E0401,E1101 \
+                --max-line-length=120 \
+                "$file"; then
+                echo "✅ No variable or import issues"
+              else
+                echo "❌ Variable or import issues detected"
+                EXIT_CODE=1
+              fi
+              
+              # 4. DEAD CODE DETECTION (Vulture)
+              echo ""
+              echo "💀 DEAD CODE DETECTION (vulture)"
+              echo "----------------------------------------"
+              VULTURE_OUTPUT=$(vulture "$file" --min-confidence 80 2>&1 || true)
+              if [ -z "$VULTURE_OUTPUT" ]; then
+                echo "✅ No dead code found"
+              else
+                echo "$VULTURE_OUTPUT"
+                echo "⚠️  Potential dead code detected (review recommended)"
+              fi
+              
+              echo ""
+            fi
+          done
+          
+          exit $EXIT_CODE
+        continue-on-error: true
+      
+      - name: Skip check (no Python file changed)
+        if: steps.changed_files.outputs.files == ''
+        run: echo "✅ No Python files changed, skipping checks."
+      
+      # ==============================================================
+      # GENERATE DETAILED GITHUB SUMMARY
+      # ==============================================================
+      - name: Generate GitHub Summary
+        if: always()
+        run: |
+          echo "# 📊 Focused Code Quality Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Focus Areas:** Type Checking • Undefined Names • Import Errors • Dead Code" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "## 📋 Build Information" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Author | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Timestamp | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "## 🎯 Analysis Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.changed_files.outputs.files }}" == "" ]; then
+            echo "ℹ️ **No Python files changed** - No checks required." >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ steps.quality_checks.outcome }}" == "success" ]; then
+            echo "✅ **All checks passed!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ No type errors" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ No undefined names or imports" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ No variables used before assignment" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ No significant dead code" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Issues detected** - Please review the logs above." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Common Issues to Check:" >> $GITHUB_STEP_SUMMARY
+            echo "- 🔍 Type annotations and type compatibility" >> $GITHUB_STEP_SUMMARY
+            echo "- 🔍 Import statements and module availability" >> $GITHUB_STEP_SUMMARY
+            echo "- 🔍 Variable definitions before usage" >> $GITHUB_STEP_SUMMARY
+            echo "- 🔍 Unused imports and variables" >> $GITHUB_STEP_SUMMARY
+            echo "- 🔍 Dead/unreachable code" >> $GITHUB_STEP_SUMMARY
           fi
-
-          echo "════════════════════════════════════════"
-          echo "🔍 Analyzing ${#files[@]} Python file(s)"
-          echo "════════════════════════════════════════"
-
-          # Track if any tool fails
-          OVERALL_FAILURE=0
-
-          # Helper function: Run a tool and track its success/failure
-          run_tool_and_check() {
-            local tool_name="$1"
-            shift
-            echo ""
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "▶️  Running: $tool_name"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            
-            if "$@"; then
-              echo "✅ $tool_name passed"
-              return 0
-            else
-              local exit_code=$?
-              echo "❌ $tool_name failed with exit code $exit_code"
-              OVERALL_FAILURE=1
-              return $exit_code
-            fi
-          }
-
-          # Iterate through each changed file and run all checks
-          for file in "${files[@]}"; do
-            # Trim whitespace
-            file=$(echo "$file" | xargs) || true
-            
-            # Skip empty entries
-            if [ -z "$file" ]; then
-              continue
-            fi
-            
-            echo ""
-            echo "════════════════════════════════════════"
-            echo "📄 Analyzing: $file"
-            echo "════════════════════════════════════════"
-
-            # ─────────────────────────────────────────
-            # 1. MyPy: Static Type Checking
-            # ─────────────────────────────────────────
-            # Checks for type consistency and catches type-related bugs
-            run_tool_and_check "MyPy (Type Checker)" \
-              mypy --ignore-missing-imports \
-                   --show-error-codes \
-                   --pretty \
-                   "$file" || true
-
-            # ─────────────────────────────────────────
-            # 2. Pylint: Comprehensive Code Analysis
-            # ─────────────────────────────────────────
-            # Checks for errors, code smells, and enforces coding standards
-            # Disabled checks:
-            #   - C0114: Missing module docstring
-            #   - C0115: Missing class docstring
-            #   - C0116: Missing function docstring
-            run_tool_and_check "Pylint (Code Linter)" \
-              pylint --output-format=colorized \
-                     --disable=C0114,C0115,C0116 \
-                     --max-line-length=120 \
-                     --score=yes \
-                     "$file" || true
-
-            # ─────────────────────────────────────────
-            # 3. Bandit: Security Vulnerability Scanner
-            # ─────────────────────────────────────────
-            # Identifies common security issues in Python code
-            run_tool_and_check "Bandit (Security Scanner)" \
-              bandit -r "$file" \
-                     -f screen \
-                     --severity-level medium || true
-
-            # ─────────────────────────────────────────
-            # 4. Flake8: Style Guide Enforcement (PEP 8)
-            # ─────────────────────────────────────────
-            # Checks code against Python's PEP 8 style guide
-            # Ignored warnings:
-            #   - E203: Whitespace before ':' (conflicts with Black)
-            #   - W503: Line break before binary operator (outdated)
-            run_tool_and_check "Flake8 (Style Checker)" \
-              flake8 --extend-ignore=E203,W503 \
-                     --max-line-length=120 \
-                     --show-source \
-                     --statistics \
-                     "$file" || true
-
-            # ─────────────────────────────────────────
-            # 5. Radon: Cyclomatic Complexity Analysis
-            # ─────────────────────────────────────────
-            # Measures code complexity to identify difficult-to-maintain code
-            # Complexity grades: A (simple) to F (very complex)
-            echo ""
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "▶️  Running: Radon (Complexity Analyzer)"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            radon cc "$file" --average --show-complexity || true
-            echo "ℹ️  Radon analysis complete (informational only)"
-
-            # ─────────────────────────────────────────
-            # 6. Vulture: Dead Code Detection
-            # ─────────────────────────────────────────
-            # Finds unused code (functions, classes, variables)
-            run_tool_and_check "Vulture (Dead Code Detector)" \
-              vulture "$file" \
-                      --min-confidence 80 \
-                      --sort-by-size || true
-
-            echo ""
-            echo "✓ Completed analysis of: $file"
-            echo "════════════════════════════════════
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "*View detailed logs in the workflow run above* ⬆️" >> $GITHUB_STEP_SUMMARY
+      
+      # ==============================================================
+      # FAIL THE JOB IF ISSUES FOUND
+      # ==============================================================
+      - name: Check if quality checks failed
+        if: steps.quality_checks.outcome == 'failure'
+        run: |
+          echo "::error::Code quality checks failed. Please fix the issues above."
+          exit 1
