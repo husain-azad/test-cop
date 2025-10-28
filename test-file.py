@@ -1,131 +1,173 @@
-from rest_framework import viewsets, generics, status
-from rest_framework.views import APIView
+from rest_framework import viewsets, status
 from rest_framework.response import Response
-
-from django.db.models import Case, When
 from django.core.cache import cache
-
+from rest_framework.views import APIView
+from copy import deepcopy
 from utils.state_manager.mixin import StateManagerMixin
-from system.models import Chart
-from system.api.serializers.chart import ChartSerializer
+from system.models import Card, Type
+from system.api.serializers.card import CardSerializer, MaskCardSerializer
+from users.authentication import CustomTokenAuthentication
+from system.tasks.notification import test_send_notification_to_subscribers
+from system.api.helper import get_custom_activity_logger, generic_old_and_new_update_values
+from system.documents.redis_document import RedisModel
 from django.db import transaction
 from django.utils.translation import gettext_lazy as _
-from users.authentication import CustomTokenAuthentication
-from copy import deepcopy
-from system.api.helper import get_custom_activity_logger, generic_old_and_new_update_values
 from system.api.views.decorators import user_access_check
-from django.core.exceptions import PermissionDenied
 from crbrm.config import REDIS_TIMEOUT
 
+__all__ = ["CardViewSet"]
 
-__all__ = ["ChartViewSet", "ChartNameView", "ChartListView"]
 
-
-class ChartViewSet(StateManagerMixin, viewsets.ModelViewSet):
+class CardViewSet(StateManagerMixin, viewsets.ModelViewSet):
     """
-    ChartViewSet is default view for :class:`.Chart`. This view operates List, Get, Update and Delete functions.
+    CardViewSet is default view for :class:`.Card`. This view operates List, Get, Update and Delete functions.
 
     **Example Request:**
 
     .. code-block:: python
 
-        GET -> /api/system/chart/
+        GET -> /api/system/card/
             data: None
 
-        POST -> /api/system/chart/
+        GET -> /api/system/card/?mask=basic
+            -> If mask=basic then it returns the basic information(id, name, label).
 
-        PUT -> /api/system/chart/1/
+        GET -> /api/system/card/?card_type=Workflow
 
-        PATCH -> /api/system/chart/1/
+        POST -> /api/system/card/
 
-        DELETE -> /api/system/chart/1/
+        PUT -> /api/system/card/1/
 
-        Documentation : api_doc_strings/crbrm/system/api/views/chart.md #Chart-ViewSet
+        PATCH -> /api/system/card/1/
+
+        DELETE -> /api/system/card/1/
+
+    Documentation : api_doc_strings/crbrm/system/api/views/card.md #Card-ViewSet
     """
 
-    queryset = Chart.objects.select_related("creator").all()
-    serializer_class = ChartSerializer
+    queryset = Card.objects.select_related("creator", "type").all().order_by("-created_at")
+    serializer_class = CardSerializer
     authentication_classes = [CustomTokenAuthentication]
-    
-    # def list(self, request, *args, **kwargs):
-    #     check = user_access_check(user=request.user, required_permissions=["READ"])
-    #     if not isinstance(check, bool):
-    #         return Response(check, status=status.HTTP_400_BAD_REQUEST)
-    #
-    #     cache_key = f"{self.request.tenant}_chart_model_redis"
-    #
-    #     queryset = (
-    #         Chart.objects.select_related("creator").all().order_by("-created_at")
-    #     )
-    #
-    #     obj_ids = [i.id for i in queryset]
-    #     page = self.paginate_queryset(queryset)
-    #     if page is not None:
-    #         # cache.delete(cache_key)
-    #         if cache_key in cache:
-    #             check_cache_keys = RedisModel.check_keys(
-    #                 cache_key=cache_key, keys=obj_ids
-    #             )
-    #             cache_data_get = RedisModel.filter(cache_key=cache_key, keys=obj_ids)
-    #
-    #             if len(check_cache_keys) == 0 and cache_data_get:
-    #                 return self.get_paginated_response(cache_data_get.values())
-    #
-    #         serializer = self.get_serializer(page, many=True)
-    #         response = Response(serializer.data)
-    #
-    #         if serializer.data:
-    #             for tdata in serializer.data:
-    #                 RedisModel.create(cache_key=cache_key, key=tdata["id"], value=tdata)
-    #
-    #         return self.get_paginated_response(response.data)
-    #
-    #     serializer = self.get_serializer(queryset, many=True)
-    #     return Response(serializer.data)
 
-# new code for 12 nov
+    # New card list code 12 Nov
     def list(self, request, *args, **kwargs):
-        # User access check
+        from utils.state_manager.request_context import get_state_manager
+        manager = get_state_manager()
+        if manager is None:
+            return Response({"error": "State manager not found"}, status=status.HTTP_400_BAD_REQUEST)
+        
         check = user_access_check(user=request.user, required_permissions=["READ"])
         if not isinstance(check, bool):
             return Response(check, status=status.HTTP_400_BAD_REQUEST)
 
-        cache_key = f"{self.request.tenant}_chart_model_redis"
-        queryset = Chart.objects.select_related("creator").all().order_by("-created_at")
-        obj_ids = [chart.id for chart in queryset]
+        cache_key = f"{self.request.tenant}_new_card_model_redis"
+        type_id = request.GET.get("type_id", None)
+        card_type = request.GET.get("card_type", None)
+        is_mask = self.request.GET.get("mask", "detail")
 
+        # if type_id == "null" and card_type:
+        #     query = f"""SELECT * FROM "system_card" WHERE (NOT ("system_card"."is_deleted") AND "system_card"."card_type" = '{str(card_type)}' AND "system_card"."type_id" IS NULL) ORDER BY "system_card"."created_at" DESC;"""
+        # elif type_id and card_type:
+        #     query = f"""SELECT * FROM "system_card" WHERE (NOT ("system_card"."is_deleted") AND "system_card"."card_type" = '{str(card_type)}' AND "system_card"."type_id" = {int(type_id)}) ORDER BY "system_card"."created_at" DESC"""
+        # elif type_id == "null":
+        #     query = """SELECT * FROM "system_card" WHERE (NOT ("system_card"."is_deleted") AND "system_card"."type_id" IS NULL) ORDER BY "system_card"."created_at" DESC;"""
+        # elif type_id:
+        #     query = f"""SELECT * FROM "system_card" WHERE (NOT ("system_card"."is_deleted") AND "system_card"."type_id" = {int(type_id)}) ORDER BY "system_card"."created_at" DESC;"""
+        # elif card_type:
+        #     query = f"""SELECT * FROM "system_card" WHERE (NOT ("system_card"."is_deleted") AND "system_card"."card_type" = '{str(card_type)}') ORDER BY "system_card"."created_at" DESC;"""
+        # else:
+        #     query = """SELECT * FROM "system_card" WHERE NOT ("system_card"."is_deleted") ORDER BY "system_card"."created_at" DESC;"""
+
+        # queryset = Card.objects.raw(query)
+
+        filters = {"is_deleted": False}
+
+        # Handle type_id
+        if type_id == "null":
+            filters["type_id__isnull"] = True
+        elif type_id:
+            filters["type_id"] = int(type_id)
+
+        # Handle card_type
+        if card_type:
+            filters["card_type"] = card_type
+
+        # Get queryset
+        queryset = manager.filter_cards(**filters)
+
+
+        # Final ordering
+        queryset = sorted(queryset, key=lambda card: card.created_at, reverse=True)
+    
+        # fallback to parent if child has no cards
+        if not queryset and type_id:
+            try:
+                # current_type = Type.objects.filter(id=int(type_id)).first()
+                current_type = manager.get_type_by_id(int(type_id))
+                if current_type and current_type.parent_id:
+                    parent_type_id = current_type.parent_id
+                    # query = query.replace(
+                    #     f'"system_card"."type_id" = {int(type_id)}',
+                    #     f'"system_card"."type_id" = {parent_type_id}'
+                    # )
+                    # queryset = list(Card.objects.raw(query))
+                    # queryset = Card.objects.filter(type_id=parent_type_id)
+                    queryset = manager.filter_cards(type_id =int(parent_type_id))
+                    queryset = sorted(queryset, key=lambda card: card.created_at, reverse=True)
+
+            except Exception as e:
+                pass
+
+        if is_mask.lower() == "basic":
+            serializer = MaskCardSerializer(queryset, many=True)
+            return Response(data={"count": len(queryset), "results": serializer.data})
+        # fetched_cache = cache.get(cache_key) if cache_key in cache else None
         results = []
-        fetched_cache = cache.get(cache_key) if cache_key in cache else None
+        obj_ids = [i.id for i in queryset]
+        card_map = {card.id : card for card in queryset}
 
-        # Check for paginated response if necessary
-        page = self.paginate_queryset(queryset)
+        # results = list(map(lambda card_id: fetched_cache.get(card_id) or card_map[card_id], obj_ids))
 
-        # Iterate through obj_ids and retrieve from cache or DB as needed
-        for chart_id in obj_ids:
-                if fetched_cache and chart_id in fetched_cache:
-                    results.append(fetched_cache[chart_id])
-                else:
-                    chart_object = Chart.objects.get(id=chart_id)
-                    serializer = ChartSerializer(chart_object)
-                    serializer_data = serializer.data
-                    results.append(serializer_data)
+        def get_card_or_fetch(card_id):
+            fetched_card = None
+            if cache_key:
+                fetched_card = RedisModel.get(cache_key=cache_key, key=card_id)
 
-                    # Update cache with newly fetched data
-                    if fetched_cache is None:
-                        new_record = {chart_id: serializer_data}
-                        cache.set(cache_key, new_record, timeout=REDIS_TIMEOUT)
-                        fetched_cache = new_record
-                    else:
-                        fetched_cache[chart_id] = serializer_data
-                        cache.set(cache_key, fetched_cache, timeout=REDIS_TIMEOUT)
+            if fetched_card != False:
+                return fetched_card
 
-        if page is not None:
-            # Paginate results
-            paginated_results = self.get_paginated_response(results)
-            return paginated_results
+            card_object = card_map.get(card_id)
+            if card_object:
+                serializer = CardSerializer(card_object)
+                serializer_data = serializer.data
+                RedisModel.create(cache_key=cache_key, key=card_object.id, value=serializer_data)
+                return serializer_data
 
-        # If not paginated, retrieve data from cache or serialize directly
+            return None
+        results = list(filter(None, map(get_card_or_fetch, obj_ids)))
 
+         
+        # for card_id in obj_ids:
+        #     # Check if card data is in cache
+        #     if fetched_cache and card_id in fetched_cache:
+        #         results.append(fetched_cache[card_id])
+        #     else:
+        #         # Fetch card data from database if not in cache
+        #         card_object = Card.objects.get(id=card_id)
+        #         serializer = CardSerializer(card_object)
+        #         serializer_data = serializer.data
+        #         results.append(serializer_data)
+
+        #         # Update cache with new data
+        #         if fetched_cache is None:
+        #             new_record = {card_id: serializer_data}
+        #             cache.set(cache_key, new_record, timeout=REDIS_TIMEOUT)
+        #             fetched_cache = new_record
+        #         else:
+        #             fetched_cache[card_id] = serializer_data
+        #             cache.set(cache_key, fetched_cache, timeout=REDIS_TIMEOUT)
+
+        # Prepare the response data
         data_dict = {
             "count": len(results),
             "results": results,
@@ -133,6 +175,53 @@ class ChartViewSet(StateManagerMixin, viewsets.ModelViewSet):
 
         return Response(data_dict)
 
+    
+    # Old card list code ----------
+    # def list(self, request, *args, **kwargs):
+    #     cache_key = f"{self.request.tenant}_card_model_redis"
+    #     type_id = self.request.GET.get("type_id", None)
+    #     card_type = self.request.GET.get("card_type", None)
+    #
+    #     if type_id == "null" and card_type:
+    #         queryset = Card.objects.filter(
+    #             type__id=None, card_type=str(card_type)
+    #         ).select_related("creator", "type").order_by("-created_at")
+    #     elif type_id and card_type:
+    #         queryset = Card.objects.filter(
+    #             type__id=type_id, card_type=str(card_type)
+    #         ).select_related("creator", "type").order_by("-created_at")
+    #     elif type_id == "null":
+    #         queryset = Card.objects.filter(type__id=None).select_related("creator", "type").order_by("-created_at")
+    #     elif type_id:
+    #         queryset = Card.objects.filter(type__id=type_id).select_related("creator", "type").order_by("-created_at")
+    #     elif card_type:
+    #         queryset = Card.objects.filter(card_type=str(card_type)).select_related("creator", "type").order_by(
+    #             "-created_at"
+    #         )
+    #     else:
+    #         queryset = (
+    #             Card.objects.select_related("creator", "type")
+    #             .all()
+    #             .order_by("-created_at")
+    #         )
+    #
+    #     obj_ids = list(queryset.values_list("id", flat=True))
+    #
+    #     if cache_key in cache:
+    #         check_cache_keys = RedisModel.check_keys(
+    #             cache_key=cache_key, keys=obj_ids
+    #         )
+    #         cache_data_get = RedisModel.filter(cache_key=cache_key, keys=obj_ids)
+    #
+    #         if len(check_cache_keys) == 0 and cache_data_get:
+    #             return Response(data={"count": len(cache_data_get.keys()), "results": cache_data_get.values()})
+    #
+    #     serializer = self.get_serializer(queryset, many=True)
+    #     if serializer.data:
+    #         for tdata in serializer.data:
+    #             RedisModel.create(cache_key=cache_key, key=tdata["id"], value=tdata)
+    #
+    #     return Response(data={"count": queryset.count(), "results": serializer.data})
 
     def perform_create(self, serializer):
         check = user_access_check(user=self.request.user, required_permissions=["READ", "CREATE"])
@@ -143,13 +232,28 @@ class ChartViewSet(StateManagerMixin, viewsets.ModelViewSet):
             transaction_point = transaction.savepoint()
             try:
                 serializer.save(creator=self.request.user)
-                chart_obj = Chart.objects.get(id=serializer.data["id"])
-                get_custom_activity_logger("CREATE", chart_obj, self.request.user, "", model="chart")
+                details = serializer.data
+
+                test_send_notification_to_subscribers(
+                    tenant=self.request.tenant,
+                    user=self.request.user,
+                    object_id=details["id"],
+                    event_id=7,
+                    type="success",
+                    detail_url=f"/api/system/card/{details['id']}/",
+                    model="card",
+                    nt_key=True,
+                )
+
+                # card_obj = Card.objects.get(id=details["id"])
                 transaction.savepoint_commit(transaction_point)
+                # get_custom_activity_logger(
+                #     "CREATE", card_obj, self.request.user, "", model="card"
+                # )
             except Exception as error:
                 transaction.savepoint_rollback(transaction_point)
                 return Response({"error": _(str(error))}, status=status.HTTP_400_BAD_REQUEST)
-
+            
     def update(self, request, *args, **kwargs):
         check = user_access_check(user=self.request.user, required_permissions=["READ", "MODIFY"])
         if not isinstance(check, bool):
@@ -161,182 +265,43 @@ class ChartViewSet(StateManagerMixin, viewsets.ModelViewSet):
                 instance = self.get_object()
                 serializer = self.get_serializer(instance, data=request.data, partial=True)
                 serializer.is_valid(raise_exception=True)
-
                 old_instance = deepcopy(instance)
+
                 serializer.save(modifier=self.request.user)
                 details = serializer.data
 
                 generic_old_and_new_update_values(
-                    request, request.data, old_instance, "chart", "MODIFY"
+                    request, request.data, old_instance, "card", "MODIFY"
                 )
                 transaction.savepoint_commit(transaction_point)
                 return Response(details)
             except Exception as error:
                 transaction.savepoint_rollback(transaction_point)
-                return Response({"error": _(str(error))}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"error": _(str(error))}, status=status.HTTP_400_BAD_REQUEST)   
 
-    def get_queryset(self):
-        if getattr(self, 'swagger_fake_view', False):
-            # queryset just for schema generation metadata
-            return Chart.objects.none()
-
-        return super().get_queryset().filter(creator=self.request.user)
-    
-    def perform_destroy(self, instance):
+    def destroy(self, request, *args, **kwargs):
         check = user_access_check(user=self.request.user, required_permissions=["READ", "DELETE"])
         if not isinstance(check, bool):
             return Response(check, status=status.HTTP_400_BAD_REQUEST)
         
-        get_custom_activity_logger("DELETE", instance, self.request.user, model="chart")
+        instance = self.get_object()
+        self.perform_destroy(instance)
 
-        return super().perform_destroy(instance)
-
-
-class ChartNameView(StateManagerMixin, APIView):
-    """
-    ChartNameView is view for query :class:`.Chart` type with name. With this endpoint we can query related object model with name attribute.
-
-    **Example Request:**
-
-    .. code-block:: python
-
-        GET -> /api/system/chart/name/{chart_name}/
-            data: None
-
-    Documentation : api_doc_strings/crbrm/system/api/views/chart.md Chart-Name-View
-    """
-
-    authentication_classes = [CustomTokenAuthentication]
-    
-    def get(self, request, chart_name):
-        check = user_access_check(user=request.user, required_permissions=["READ"])
-        if not isinstance(check, bool):
-            return Response(check, status=status.HTTP_400_BAD_REQUEST)
-        
-        chart_obj = ChartSerializer(
-            Chart.objects.get(name=Chart, creator=self.request.user)
+        test_send_notification_to_subscribers(
+            tenant=self.request.tenant,
+            user=self.request.user,
+            object_id=None,
+            event_id=8,
+            type="success",
+            detail_url=None,
+            model=None,
+            isError=True,
+            error_message=f"Card with id: {instance.pk} is deleted successfully.",
         )
-        return Response(data=chart_obj.data)
 
+        get_custom_activity_logger("DELETE", instance, self.request.user, model="card")
 
-class ChartListView(StateManagerMixin, generics.ListAPIView):
-    """
-    ChartListView returns objects, which requested with parameters.
-
-    * API supports multiple ids
-    * If more than one id is given, the ids must be separated by commas.
-
-    **Example Request:**
-
-    .. code-block:: python
-
-        GET -> /api/system/charts/list/?ids=1
-            data: None
-
-    **Example Response:**
-
-    .. code-block:: python
-
-        {
-            "count": 1,
-            "next": null,
-            "previous": null,
-            "results": [
-                {
-                    "id": 1,
-                    "creator": "PLM Manager",
-                    "modifier": null,
-                    "filter_detail": {
-                        "id": 1,
-                        "creator": 1,
-                        "modifier": null,
-                        "description": null,
-                        "is_deleted": false,
-                        "deleted_at": null,
-                        "is_protected": false,
-                        "name": "test",
-                        "label": "test",
-                        "fields": [
-                            {
-                                "name": "is_latest_revision",
-                                "type": "system",
-                                "value": true,
-                                "operand": "contains"
-                            }
-                        ],
-                        "is_public": false,
-                        "is_hidden": false,
-                        "properties": null,
-                        "created_at": "2022-09-06T10:50:09.619932+00:00",
-                        "updated_at": "2022-09-06T10:50:09.619987+00:00"
-                    },
-                    "created_at": "2022-09-06T13:50:09.691173+03:00",
-                    "updated_at": "2022-09-06T13:50:09.691236+03:00",
-                    "description": null,
-                    "is_deleted": false,
-                    "deleted_at": null,
-                    "is_protected": false,
-                    "name": "test",
-                    "label": "test",
-                    "chart_type": 3,
-                    "is_hidden": false,
-                    "fields": {
-                        "type": 3,
-                        "attribute": "state",
-                        "date_type": "_week",
-                        "aggregation": "avg"
-                    },
-                    "is_public": false,
-                    "properties": null,
-                    "filter": 1
-                }
-            ]
-        }
-    Documentation : api_doc_strings/crbrm/system/api/views/chart.md #Chart-List-View
-    """
-
-    serializer_class = ChartSerializer
-    authentication_classes = [CustomTokenAuthentication]
-    
-    def get_queryset(self):
-        check = user_access_check(user=self.request.user, required_permissions=["READ"])
-        if not isinstance(check, bool):
-            raise PermissionDenied(_(check["error"]))
-        
-        try:
-            ids = self.request.query_params.get("ids", None)
-            ids = [x for x in ids.split(",")]
-            preserved = Case(*[When(pk=pk, then=pos) for pos, pk in enumerate(ids)])
-            queryset = Chart.objects.filter(
-                pk__in=ids, creator=self.request.user
-            ).order_by(preserved)
-        except:
-            queryset = Chart.objects.none()
-
-        return queryset
-
-
-class ChartPublicView(StateManagerMixin, generics.ListAPIView):
-    """
-    Provides a list of charts that are marked as public.
-    Checks user permissions before retrieving public charts.
-    Returns serialized chart data.
-
-    Args:
-        self.request.user (User): Authenticated user making the request.
-
-    Returns:
-        QuerySet: Filtered queryset containing only public Chart objects.
-
-    Documentation : api_doc_strings/crbrm/system/api/views/chart.md #Chart-Public-View
-    """
-    queryset = Chart.objects.all()
-    serializer_class = ChartSerializer
-    authentication_classes = [CustomTokenAuthentication]
-    
-    def get_queryset(self):
-        check = user_access_check(user=self.request.user, required_permissions=["READ"])
-        if not isinstance(check, bool):
-            raise PermissionDenied(_(check["error"]))
-        
-        return super().get_queryset().filter(is_public=True)
+        return Response(
+            {"message": "Card is deleted successfully."},
+            status=status.HTTP_204_NO_CONTENT,
+        )
